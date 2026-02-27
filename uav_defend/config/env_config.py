@@ -18,7 +18,7 @@ class EnvConfig:
     eps: float = 1e-8  # ε: Small value for numerical stability
     
     # Soldier movement parameters
-    v_s: float = 10.0  # Soldier speed (distance per time unit)
+    v_s: float = 3.0  # Soldier speed (same as defender)
     
     # Enemy drone parameters (weaving pursuit)
     v_e: float = 3.0  # Enemy speed
@@ -39,7 +39,7 @@ class EnvConfig:
     reward_time_penalty: float = -0.05  # Small time penalty per step
     
     # Distance thresholds
-    detection_radius: float = 80.0  # Defender detects enemy within this radius (covers full domain)
+    detection_radius: float = 8.0  # Defender detects enemy within this radius (limited sensing range)
     intercept_radius: float = 2.0  # Defender intercepts enemy (WIN)
     threat_radius: float = 3.0  # Enemy catches soldier (LOSS)
     collision_radius: float = 5.0  # If enemy & defender both near soldier (LOSS)

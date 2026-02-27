@@ -11,7 +11,7 @@ from uav_defend.config.env_config import EnvConfig
 
 class SoldierEnv(gym.Env):
     """
-    A 2D discrete-time environment for RL training.
+    A 2D discrete-time environment for RL training with partial observability.
     
     The defender drone is controlled by the RL agent to intercept
     an enemy drone before it reaches the soldier.
@@ -23,22 +23,31 @@ class SoldierEnv(gym.Env):
         - Defender (d ∈ ℝ²): Controlled by RL agent via 2D heading action
         - Enemy (e ∈ ℝ²): Weaving pursuit toward soldier (uncontrolled)
     
-    Observation (shape=8, normalized to [-1, 1]):
-        [soldier_x, soldier_y, defender_x, defender_y, enemy_x, enemy_y,
-         defender_to_enemy_x, defender_to_enemy_y]  # Relative vector
+    Partial Observability:
+        - Before detection: Enemy position is MASKED (zeros)
+        - After detection: Enemy position is revealed
+        - Detection occurs when defender is within detection_radius of enemy
+        - Before detection, defender follows soldier automatically
+    
+    Observation (shape=9, normalized to [-1, 1]):
+        [soldier_x, soldier_y, defender_x, defender_y, detected_flag,
+         enemy_x_masked, enemy_y_masked, rel_x_masked, rel_y_masked]
+        - detected_flag: 0.0 (not detected) or 1.0 (detected)
+        - enemy/rel values are 0.0 before detection, actual values after
         All positions normalized by L.
     
     Action (shape=2):
         2D heading vector in [-1, 1]². Normalized to unit vector.
-        Defender moves: d_next = d + v_d * dt * normalized_action
+        - Before detection: Action is IGNORED (defender follows soldier)
+        - After detection: Action controls defender heading
     
     Reward (dense shaping for RL):
         +100 for intercepting enemy (WIN)
         -100 for soldier caught (LOSS)
         -100 for collision loss
-        -50 for timeout
-        +0.1 * (prev_dist - curr_dist) for closing distance to enemy
-        -0.1 per step (encourages efficiency)
+        -100 for timeout
+        +5.0 * (prev_dist - curr_dist) for closing distance to enemy
+        -0.05 per step (encourages efficiency)
     
     Termination:
         - Intercepted: defender_enemy_dist < intercept_radius (WIN)
@@ -66,12 +75,13 @@ class SoldierEnv(gym.Env):
         self.config = config if config is not None else EnvConfig()
         self.render_mode = render_mode
         
-        # Observation space: normalized positions + relative vectors
-        # [soldier, defender, enemy, defender_to_enemy] all in [-1, 1]
+        # Observation space: normalized positions + detection flag + masked enemy info
+        # [soldier(2), defender(2), detected_flag(1), enemy_masked(2), rel_masked(2)]
+        # Enemy info is 0.0 until detected, then actual values
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(8,),
+            shape=(9,),
             dtype=np.float32,
         )
         
@@ -93,6 +103,7 @@ class SoldierEnv(gym.Env):
         self._enemy_pos: np.ndarray | None = None
         self._weave_bias: float = 0.0  # AR(1) lateral weave bias 'a'
         self._step_count: int = 0
+        self._enemy_detected: bool = False  # Tracking state: enemy detected?
         self._np_random: np.random.Generator | None = None
     
     def reset(
@@ -130,6 +141,9 @@ class SoldierEnv(gym.Env):
         self._weave_bias = 0.0
         
         self._step_count = 0
+        
+        # Initialize detection state: enemy not detected at start
+        self._enemy_detected = False
         
         # Calculate initial distances
         initial_enemy_soldier_dist = np.linalg.norm(self._enemy_pos - self._soldier_pos)
@@ -251,35 +265,57 @@ class SoldierEnv(gym.Env):
     
     def _move_defender(self, action: np.ndarray) -> None:
         """
-        Move the defender drone based on agent's action.
+        Move the defender drone based on detection state and agent's action.
         
         Args:
             action: 2D heading vector from RL agent in [-1, 1]².
         
         Behavior:
-        - Normalize action to unit vector (if norm > eps)
-        - Move defender: d_next = d + v_d * dt * normalized_action
-        - Apply reflecting boundary conditions
-        - If action norm < eps: defender does not move
+        - If enemy NOT detected (distance > detection_radius):
+          Defender follows soldier (stays co-located), action IGNORED
+        - If enemy detected (distance <= detection_radius):
+          Use RL agent's action to control heading
+        - Once detected, enemy stays tracked (detection persists)
         """
         eps = self.config.eps
         
-        # Ensure action is numpy array
-        action = np.asarray(action, dtype=np.float32)
+        # Check for detection (only if not already detected)
+        if not self._enemy_detected:
+            defender_enemy_dist = np.linalg.norm(self._enemy_pos - self._defender_pos)
+            if defender_enemy_dist <= self.config.detection_radius:
+                self._enemy_detected = True  # Start tracking!
         
-        # Calculate action norm
-        action_norm = np.linalg.norm(action)
-        
-        # If action is too small, defender doesn't move
-        if action_norm < eps:
-            return
-        
-        # Normalize action to unit vector
-        direction = action / action_norm
-        
-        # Move defender
-        displacement = self.config.v_d * self.config.dt * direction
-        new_pos = self._defender_pos + displacement
+        if not self._enemy_detected:
+            # Enemy not detected: defender follows soldier (stays with soldier)
+            # Action is IGNORED - defender moves autonomously toward soldier
+            to_soldier = self._soldier_pos - self._defender_pos
+            dist_to_soldier = np.linalg.norm(to_soldier)
+            
+            if dist_to_soldier < eps:
+                # Already at soldier position
+                return
+            
+            direction = to_soldier / dist_to_soldier
+            # Move toward soldier, but don't overshoot
+            max_move = self.config.v_d * self.config.dt
+            move_dist = min(max_move, dist_to_soldier)
+            displacement = move_dist * direction
+            new_pos = self._defender_pos + displacement
+        else:
+            # Enemy detected: use RL action to control heading
+            action = np.asarray(action, dtype=np.float32)
+            action_norm = np.linalg.norm(action)
+            
+            # If action is too small, defender doesn't move
+            if action_norm < eps:
+                return
+            
+            # Normalize action to unit vector
+            direction = action / action_norm
+            
+            # Move defender
+            displacement = self.config.v_d * self.config.dt * direction
+            new_pos = self._defender_pos + displacement
         
         # Apply reflecting boundary conditions
         new_pos = self._reflect_boundary(new_pos)
@@ -391,29 +427,40 @@ class SoldierEnv(gym.Env):
     
     def _get_obs(self) -> np.ndarray:
         """
-        Get normalized observation for RL.
+        Get normalized observation for RL with partial observability.
         
         Returns:
-            obs: Array of shape (8,) with:
-                [soldier_x, soldier_y, defender_x, defender_y, 
-                 enemy_x, enemy_y, defender_to_enemy_x, defender_to_enemy_y]
-                All values normalized to [-1, 1] by dividing positions by L.
+            obs: Array of shape (9,) with:
+                [soldier_x, soldier_y, defender_x, defender_y, detected_flag,
+                 enemy_x_masked, enemy_y_masked, rel_x_masked, rel_y_masked]
+                
+                - detected_flag: 0.0 before detection, 1.0 after
+                - enemy/rel values are 0.0 before detection (MASKED)
+                - All values normalized to [-1, 1] by dividing positions by L.
         """
         L = self.config.L
         
         # Normalize positions to [-1, 1]
         soldier_norm = self._soldier_pos / L
         defender_norm = self._defender_pos / L
-        enemy_norm = self._enemy_pos / L
         
-        # Relative vector from defender to enemy (normalized)
-        defender_to_enemy = (self._enemy_pos - self._defender_pos) / L
-        # Clip to [-1, 1] in case entities are far apart
-        defender_to_enemy = np.clip(defender_to_enemy, -1.0, 1.0)
+        # Detection flag
+        detected_flag = np.array([1.0 if self._enemy_detected else 0.0])
+        
+        if self._enemy_detected:
+            # Enemy detected: reveal true enemy info
+            enemy_norm = self._enemy_pos / L
+            defender_to_enemy = (self._enemy_pos - self._defender_pos) / L
+            defender_to_enemy = np.clip(defender_to_enemy, -1.0, 1.0)
+        else:
+            # Enemy NOT detected: mask enemy info with zeros
+            enemy_norm = np.array([0.0, 0.0])
+            defender_to_enemy = np.array([0.0, 0.0])
         
         return np.concatenate([
             soldier_norm, 
-            defender_norm, 
+            defender_norm,
+            detected_flag,
             enemy_norm,
             defender_to_enemy
         ]).astype(np.float32)
@@ -436,6 +483,7 @@ class SoldierEnv(gym.Env):
             "weave_bias": self._weave_bias,
             "enemy_soldier_dist": enemy_soldier_dist,
             "defender_enemy_dist": defender_enemy_dist,
+            "enemy_detected": self._enemy_detected,  # Use stored tracking state
             "outcome": outcome,
         }
     

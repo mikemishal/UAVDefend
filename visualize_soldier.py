@@ -24,6 +24,7 @@ def run_episode(env, max_steps=2000, seed=None, policy="random"):
         enemy_positions: Array of shape (T, 2)
         rewards: Array of shape (T,) with per-step rewards
         total_reward: Total episode reward
+        outcome: Episode outcome from environment ("intercepted", "soldier_caught", etc.)
     """
     soldier_positions = []
     defender_positions = []
@@ -36,6 +37,7 @@ def run_episode(env, max_steps=2000, seed=None, policy="random"):
     enemy_positions.append(info['enemy_pos'].copy())
     
     total_reward = 0.0
+    outcome = "ongoing"
     for _ in range(max_steps):
         # Select action based on policy
         if policy == "pursuit":
@@ -56,11 +58,12 @@ def run_episode(env, max_steps=2000, seed=None, policy="random"):
         enemy_positions.append(info['enemy_pos'].copy())
         rewards.append(reward)
         total_reward += reward
+        outcome = info.get('outcome', 'ongoing')
         if terminated or truncated:
             break
     
     return (np.array(soldier_positions), np.array(defender_positions), 
-            np.array(enemy_positions), np.array(rewards), total_reward)
+            np.array(enemy_positions), np.array(rewards), total_reward, outcome)
 
 
 def visualize_trajectory(soldier_pos, defender_pos, enemy_pos, L=50.0, 
@@ -246,22 +249,9 @@ def run_multiple_episodes(env, n_episodes=5, max_steps=500, policy="random"):
     total_rewards = []
     
     for i in range(n_episodes):
-        soldier_pos, defender_pos, enemy_pos, rewards, total_reward = run_episode(
+        soldier_pos, defender_pos, enemy_pos, rewards, total_reward, outcome = run_episode(
             env, max_steps=max_steps, seed=None, policy=policy
         )
-        
-        # Determine outcome from final state
-        final_enemy_soldier_dist = np.linalg.norm(soldier_pos[-1] - enemy_pos[-1])
-        final_defender_enemy_dist = np.linalg.norm(defender_pos[-1] - enemy_pos[-1])
-        
-        if final_defender_enemy_dist < env.config.intercept_radius:
-            outcome = "intercepted"
-        elif final_enemy_soldier_dist < env.config.threat_radius:
-            outcome = "soldier_caught"
-        elif len(soldier_pos) >= max_steps:
-            outcome = "timeout"
-        else:
-            outcome = "unknown"
         
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
         total_rewards.append(total_reward)
@@ -442,8 +432,8 @@ if __name__ == "__main__":
     print(f"Observation space: {env.observation_space}")
     print(f"Action space: {env.action_space}")
     print(f"Defender speed: {config.v_d}, Enemy speed: {config.v_e}")
-    print(f"Reward shaping: step={config.reward_step_penalty}, "
-          f"distance={config.reward_distance_shaping}, "
+    print(f"Reward shaping: step={config.reward_time_penalty}, "
+          f"progress_scale={config.reward_progress_scale}, "
           f"intercept={config.reward_intercept}, caught={config.reward_soldier_caught}")
     
     # Run random policy episodes (baseline - what RL needs to beat)
