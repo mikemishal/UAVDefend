@@ -245,7 +245,7 @@ def run_multiple_episodes(env, n_episodes=5, max_steps=500, policy="random"):
         episodes: List of tuples (soldier_pos, defender_pos, enemy_pos, outcome, total_reward)
     """
     episodes = []
-    outcomes = {"intercepted": 0, "soldier_caught": 0, "collision_loss": 0, "timeout": 0}
+    outcomes = {"intercepted": 0, "soldier_caught": 0, "unsafe_intercept": 0, "timeout": 0}
     total_rewards = []
     
     for i in range(n_episodes):
@@ -314,7 +314,7 @@ def animate_multiple_episodes(episodes, L=50.0, interval=50, pause_between=30,
     outcome_colors = {
         "intercepted": "limegreen",
         "soldier_caught": "red", 
-        "collision_loss": "orange",
+        "unsafe_intercept": "orange",
         "timeout": "gray",
         "unknown": "purple"
     }

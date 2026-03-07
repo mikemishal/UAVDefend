@@ -93,7 +93,7 @@ def create_annotated_video(episodes_data, config, video_path, fps=15):
     outcome_colors = {
         'intercepted': '#2ecc71',
         'soldier_caught': '#e74c3c',
-        'collision_loss': '#f39c12',
+        'unsafe_intercept': '#f39c12',
         'timeout': '#95a5a6',
         'ongoing': '#3498db'
     }

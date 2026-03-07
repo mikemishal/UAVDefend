@@ -21,7 +21,7 @@ def run_episodes(env, n_episodes=50, policy="random", model=None, max_steps=500)
     Returns:
         outcomes dict, rewards list
     """
-    outcomes = {"intercepted": 0, "soldier_caught": 0, "collision_loss": 0, "timeout": 0}
+    outcomes = {"intercepted": 0, "soldier_caught": 0, "unsafe_intercept": 0, "timeout": 0}
     rewards = []
     
     for i in range(n_episodes):
@@ -103,17 +103,17 @@ def main():
     
     # Plot 2: Outcome Distribution
     ax2 = axes[1]
-    outcome_labels = ['Intercepted', 'Soldier\nCaught', 'Collision\nLoss', 'Timeout']
+    outcome_labels = ['Intercepted', 'Soldier\nCaught', 'Unsafe\nIntercept', 'Timeout']
     x = np.arange(len(outcome_labels))
     width = 0.35
     
     random_counts = [random_outcomes['intercepted'], random_outcomes['soldier_caught'],
-                     random_outcomes['collision_loss'], random_outcomes['timeout']]
+                     random_outcomes['unsafe_intercept'], random_outcomes['timeout']]
     ax2.bar(x - width/2, random_counts, width, label='Random', color='#ff6b6b', edgecolor='black')
     
     if ppo_available:
         ppo_counts = [ppo_outcomes['intercepted'], ppo_outcomes['soldier_caught'],
-                      ppo_outcomes['collision_loss'], ppo_outcomes['timeout']]
+                      ppo_outcomes['unsafe_intercept'], ppo_outcomes['timeout']]
         ax2.bar(x + width/2, ppo_counts, width, label='PPO', color='#4ecdc4', edgecolor='black')
     
     ax2.set_ylabel('Episode Count', fontsize=12)

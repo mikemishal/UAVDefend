@@ -44,7 +44,7 @@ print(f"Outcome: {info['outcome']}")
 print(f"Total reward: {total_reward:.2f}")
 
 print("\n=== Multiple random episodes (stats) ===")
-outcomes = {"intercepted": 0, "soldier_caught": 0, "timeout": 0, "collision_loss": 0}
+outcomes = {"intercepted": 0, "soldier_caught": 0, "timeout": 0, "unsafe_intercept": 0}
 for ep in range(20):
     obs, info = env.reset()
     while True:

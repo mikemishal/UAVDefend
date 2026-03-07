@@ -17,29 +17,42 @@ class EnvConfig:
     # Numerical stability
     eps: float = 1e-8  # ε: Small value for numerical stability
     
+    # =========================================================================
+    # Speed Configuration (realistic but training-friendly defaults)
+    # - Soldier is intentionally much slower than drones (human on foot)
+    # - Defender is faster than enemy so RL training remains feasible
+    # - These values work well with dt=0.5 timestep for numerical stability
+    # =========================================================================
+    
     # Soldier movement parameters
-    v_s: float = 3.0  # Soldier speed (same as defender)
+    v_s: float = 1.5  # Soldier speed (slow human movement, much slower than drones)
     
     # Enemy drone parameters (weaving pursuit)
-    v_e: float = 3.0  # Enemy speed
+    v_e: float = 12.0  # Enemy drone speed (realistic and threatening)
     rho: float = 0.85  # AR(1) coefficient for weave bias persistence (lower = faster direction changes)
     sigma_a: float = 0.5  # Weave bias noise standard deviation (higher = more lateral movement)
     sigma_e: float = 0.15  # Heading noise standard deviation
     weave_amplitude: float = 1.5  # Multiplier for lateral weave component
     
     # Defender drone parameters
-    v_d: float = 3.0  # Defender speed (same as enemy - requires strategic interception)
+    v_d: float = 18.0  # Defender speed (faster than enemy, makes interception feasible for RL training)
     
     # RL reward shaping parameters
     reward_intercept: float = 100.0  # Reward for intercepting enemy (WIN)
     reward_soldier_caught: float = -100.0  # Penalty for enemy catching soldier (LOSS)
-    reward_collision: float = -100.0  # Penalty for collision loss
+    reward_unsafe_intercept: float = -100.0  # Penalty for unsafe intercept (too close to soldier)
     reward_timeout: float = -100.0  # Penalty for timeout (failed to intercept)
     reward_progress_scale: float = 5.0  # Scale for distance progress reward
     reward_time_penalty: float = -0.05  # Small time penalty per step
     
-    # Distance thresholds
-    detection_radius: float = 8.0  # Defender detects enemy within this radius (limited sensing range)
-    intercept_radius: float = 2.0  # Defender intercepts enemy (WIN)
-    threat_radius: float = 3.0  # Enemy catches soldier (LOSS)
-    collision_radius: float = 5.0  # If enemy & defender both near soldier (LOSS)
+    # =========================================================================
+    # Distance Thresholds (geometry parameters)
+    # - detection_radius >> intercept_radius: early warning for reaction time
+    # - threat_radius: immediate danger zone around soldier
+    # - intercept_radius: neutralization distance (defender catches enemy)
+    # - unsafe_intercept_radius: collateral risk zone around soldier
+    # =========================================================================
+    detection_radius: float = 30.0  # Maximum sensing range for detecting the enemy drone
+    intercept_radius: float = 2.5   # Distance at which defender neutralizes/intercepts the enemy
+    threat_radius: float = 2.0      # Enemy reaches soldier and causes mission failure
+    unsafe_intercept_radius: float = 3.5  # If intercept occurs this close to soldier, it's a failure

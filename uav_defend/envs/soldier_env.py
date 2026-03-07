@@ -42,17 +42,17 @@ class SoldierEnv(gym.Env):
         - After detection: Action controls defender heading
     
     Reward (dense shaping for RL):
-        +100 for intercepting enemy (WIN)
+        +100 for intercepting enemy safely (WIN)
         -100 for soldier caught (LOSS)
-        -100 for collision loss
+        -100 for unsafe intercept (intercept too close to soldier)
         -100 for timeout
         +5.0 * (prev_dist - curr_dist) for closing distance to enemy
         -0.05 per step (encourages efficiency)
     
     Termination:
-        - Intercepted: defender_enemy_dist < intercept_radius (WIN)
-        - Soldier caught: enemy_soldier_dist < threat_radius (LOSS)
-        - Collision: both within collision_radius of soldier (LOSS)
+        - Intercepted safely: dist_de < intercept_radius AND dist_es > unsafe_intercept_radius (WIN)
+        - Soldier caught: dist_es < threat_radius (LOSS)
+        - Unsafe intercept: dist_de < intercept_radius AND dist_es <= unsafe_intercept_radius (LOSS)
         - Timeout: step_count >= max_steps
     """
     
@@ -213,37 +213,42 @@ class SoldierEnv(gym.Env):
         defender_enemy_dist = np.linalg.norm(self._defender_pos - self._enemy_pos)
         defender_soldier_dist = np.linalg.norm(self._defender_pos - self._soldier_pos)
         
-        # Check termination conditions
-        # WIN: Defender intercepts enemy
-        intercepted = defender_enemy_dist < self.config.intercept_radius
+        # Check termination conditions using dist_de and dist_es
+        dist_de = defender_enemy_dist  # defender to enemy
+        dist_es = enemy_soldier_dist   # enemy to soldier
         
-        # LOSS: Enemy reaches soldier
-        soldier_caught = enemy_soldier_dist < self.config.threat_radius
+        # Check if defender is close enough to intercept
+        can_intercept = dist_de <= self.config.intercept_radius
         
-        # LOSS: Enemy and defender both within collision radius of soldier
-        # (defender failed to intercept before enemy reached soldier area)
-        collision_loss = (enemy_soldier_dist < self.config.collision_radius and 
-                         defender_soldier_dist < self.config.collision_radius and
-                         not intercepted)
+        # Check if intercept would be unsafe (too close to soldier)
+        unsafe_zone = dist_es <= self.config.unsafe_intercept_radius
+        
+        # WIN: Safe intercept (defender catches enemy, far enough from soldier)
+        intercepted = can_intercept and not unsafe_zone
+        
+        # LOSS: Enemy reaches soldier (threat zone)
+        soldier_caught = dist_es <= self.config.threat_radius
+        
+        # LOSS: Unsafe intercept (caught enemy but too close to soldier - collateral risk)
+        unsafe_intercept = can_intercept and unsafe_zone and not soldier_caught
         
         # Episode terminates on any terminal condition or timeout
-        terminated = intercepted or soldier_caught or collision_loss or (self._step_count >= self.config.max_steps)
+        terminated = intercepted or soldier_caught or unsafe_intercept or (self._step_count >= self.config.max_steps)
         truncated = False
         
         # Determine outcome and reward
-        # dist_de = defender to enemy, dist_es = enemy to soldier
-        dist_de = defender_enemy_dist
-        dist_es = enemy_soldier_dist
-        
-        if intercepted:
-            outcome = "intercepted"
-            reward = 100.0  # WIN
-        elif soldier_caught:
+        if soldier_caught:
+            # Check soldier_caught FIRST (highest priority failure)
             outcome = "soldier_caught"
             reward = -100.0  # LOSS
-        elif collision_loss:
-            outcome = "collision_loss"
+        elif unsafe_intercept:
+            # Unsafe intercept: caught enemy but too close to soldier
+            outcome = "unsafe_intercept"
             reward = -100.0  # LOSS
+        elif intercepted:
+            # Safe intercept (WIN)
+            outcome = "intercepted"
+            reward = 100.0  # WIN
         elif self._step_count >= self.config.max_steps:
             outcome = "timeout"
             reward = -100.0  # LOSS (failed to intercept)
@@ -471,10 +476,13 @@ class SoldierEnv(gym.Env):
         
         Args:
             outcome: Episode outcome - "ongoing", "intercepted", "soldier_caught", 
-                    "collision_loss", or "timeout".
+                    "unsafe_intercept", or "timeout".
             enemy_soldier_dist: Distance between enemy and soldier.
             defender_enemy_dist: Distance between defender and enemy.
         """
+        # Check if current state is in unsafe intercept zone
+        unsafe_zone = enemy_soldier_dist <= self.config.unsafe_intercept_radius
+        
         return {
             "step_count": self._step_count,
             "soldier_pos": self._soldier_pos.copy(),
@@ -484,6 +492,7 @@ class SoldierEnv(gym.Env):
             "enemy_soldier_dist": enemy_soldier_dist,
             "defender_enemy_dist": defender_enemy_dist,
             "enemy_detected": self._enemy_detected,  # Use stored tracking state
+            "unsafe_intercept": unsafe_zone,  # True if enemy is in unsafe zone around soldier
             "outcome": outcome,
         }
     

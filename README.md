@@ -14,24 +14,33 @@ The defender is trained using PPO (Proximal Policy Optimization) from Stable-Bas
 ## Environment
 
 - **Domain:** Ω = [-50, 50]²
-- **Speeds:** v_defender = v_enemy = 3.0 (equal speeds make the problem non-trivial)
-- **Intercept radius:** 2.0 units
-- **Threat radius:** 3.0 units
+- **Speeds:** (realistic but training-friendly)
+  - Soldier: v_s = 1.5 (slow human on foot)
+  - Enemy drone: v_e = 12.0 (fast and threatening)
+  - Defender drone: v_d = 18.0 (faster than enemy for feasible interception)
+- **Distance Thresholds:**
+  - Detection radius: 15.0 (maximum sensing range, >> intercept radius for early warning)
+  - Intercept radius: 2.5 (defender neutralizes enemy at this distance)
+  - Threat radius: 2.0 (enemy catches soldier - mission failure)
+  - Unsafe intercept radius: 3.5 (intercept too close to soldier is a failure)
 
 ### Observation Space
-8-dimensional normalized vector in [-1, 1]:
+9-dimensional normalized vector in [-1, 1]:
 - Soldier position (x, y)
 - Defender position (x, y)
-- Enemy position (x, y)
-- Defender-to-enemy direction vector (x, y)
+- Detection flag (0 = not detected, 1 = detected)
+- Enemy position masked (x, y) - zeros until detected
+- Relative direction masked (x, y) - zeros until detected
 
 ### Action Space
 2-dimensional continuous vector in [-1, 1] representing the defender's heading direction.
+- Before detection: action ignored, defender follows soldier
+- After detection: action controls defender heading
 
 ### Reward Structure
 - **Progress reward:** `5.0 * (prev_dist - curr_dist) - 0.05` per step
-- **Intercept (win):** +100
-- **Soldier caught / collision / timeout (loss):** -100
+- **Safe intercept (win):** +100 (catch enemy far from soldier)
+- **Soldier caught / unsafe intercept / timeout (loss):** -100
 
 ## Installation
 

@@ -75,7 +75,7 @@ def evaluate_model(model_path, n_episodes=10, max_steps=500, deterministic=True)
     print("=" * 60)
     
     episodes = []
-    outcomes = {"intercepted": 0, "soldier_caught": 0, "collision_loss": 0, "timeout": 0}
+    outcomes = {"intercepted": 0, "soldier_caught": 0, "unsafe_intercept": 0, "timeout": 0}
     total_rewards = []
     
     for i in range(n_episodes):
@@ -119,7 +119,7 @@ def create_video_opencv(episodes, config, video_path, fps=20):
     outcome_colors = {
         'intercepted': 'green',
         'soldier_caught': 'red',
-        'collision_loss': 'orange',
+        'unsafe_intercept': 'orange',
         'timeout': 'gray'
     }
     
@@ -160,6 +160,15 @@ def create_video_opencv(episodes, config, video_path, fps=20):
                    markersize=12, label='Defender')
             ax.plot(enemy_pos[step, 0], enemy_pos[step, 1], 'rv', 
                    markersize=12, label='Enemy')
+            
+            # Draw detection radius around defender
+            detection_circle = plt.Circle(
+                (defender_pos[step, 0], defender_pos[step, 1]),
+                config.detection_radius,
+                fill=False, edgecolor='blue', linestyle='--', linewidth=1.5, alpha=0.6,
+                label='Detection Radius'
+            )
+            ax.add_patch(detection_circle)
             
             # Title with episode info
             color = outcome_colors.get(outcome, 'black')

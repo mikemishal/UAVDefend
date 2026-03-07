@@ -119,7 +119,7 @@ def create_video(soldier_pos, defender_pos, enemy_pos, L=50.0, fps=30,
 
 def main():
     # Create environment
-    config = EnvConfig()  # Uses defaults: L=50, v_s=10, v_e=3, etc.
+    config = EnvConfig()  # Uses defaults: L=50, v_s=1.5, v_e=12.0, v_d=18.0
     env = SoldierEnv(config=config)
     
     # Run episode until termination (soldier caught or timeout)
