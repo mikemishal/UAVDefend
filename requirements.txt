@@ -4,3 +4,5 @@ pygame>=2.5.0
 matplotlib>=3.7.0
 imageio>=2.27.0
 torch>=2.0.0
+stable-baselines3>=2.0.0
+pandas>=2.0.0

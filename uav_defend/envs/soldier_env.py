@@ -1,4 +1,18 @@
-"""Minimal Gymnasium environment with a stochastically moving soldier."""
+"""
+Gymnasium-compatible environment for UAV defense RL training.
+
+This is the UNIFIED environment used for BOTH:
+  1. Baseline evaluation with hand-designed policies (e.g., GreedyInterceptPolicy)
+  2. RL training with algorithms like PPO, SAC, TD3
+
+The environment itself contains NO policy logic. All defender control is
+provided externally via the `step(action)` interface.
+
+Design Philosophy:
+  - Environment provides dynamics and observations
+  - Policy provides actions (whether scripted or learned)
+  - Same environment instance works for evaluation and training
+"""
 
 from __future__ import annotations
 
@@ -14,37 +28,62 @@ class SoldierEnv(gym.Env):
     """
     A 2D discrete-time environment for RL training with partial observability.
     
-    The defender drone is controlled by the RL agent to intercept
-    an enemy drone before it reaches the soldier.
+    ============================================================================
+    UNIFIED ENVIRONMENT FOR BASELINE AND RL
+    ============================================================================
+    This environment is designed to work identically for:
+      - Scripted/baseline policies (e.g., GreedyInterceptPolicy)
+      - RL algorithms (e.g., PPO from Stable-Baselines3)
+    
+    The environment contains NO hardcoded policy logic. The defender drone
+    is controlled entirely by external actions passed to step().
+    
+    Usage with baseline policy:
+        env = SoldierEnv()
+        policy = GreedyInterceptPolicy()
+        obs, info = env.reset(seed=42)
+        while True:
+            action = policy.act(obs, info)  # Policy provides action
+            obs, reward, done, _, info = env.step(action)
+            if done:
+                break
+    
+    Usage with RL (Stable-Baselines3):
+        from stable_baselines3 import PPO
+        env = SoldierEnv()
+        model = PPO("MlpPolicy", env, verbose=1)
+        model.learn(total_timesteps=100000)
+    ============================================================================
     
     Domain: Ω = [-L, L]² (square centered at origin).
     
     Entities:
         - Soldier (s ∈ ℝ²): Gaussian random walk (uncontrolled)
-        - Defender (d ∈ ℝ²): Controlled by RL agent via 2D heading action
+        - Defender (d ∈ ℝ²): Controlled by external policy via 2D action
         - Enemy (e ∈ ℝ²): Weaving pursuit toward soldier (uncontrolled)
     
     Partial Observability with Kalman Tracking:
         - Before detection: Enemy state is MASKED (zeros)
         - After detection: Kalman filter estimates enemy state from noisy measurements
         - Detection occurs when defender is within detection_radius of enemy
-        - TRUE enemy state is NEVER revealed to the RL agent
+        - TRUE enemy state is NEVER revealed to the agent
         - Defender motion is controlled entirely by external policy (action-driven)
     
-    Observation (shape=9, normalized to [-1, 1]):
+    Observation Space (spaces.Box, shape=9, dtype=float32):
+        All values normalized to [-1, 1]:
         [soldier_x, soldier_y, defender_x, defender_y, detected_flag,
          e_hat_x, e_hat_y, v_hat_x, v_hat_y]
         - detected_flag: 0.0 (not detected) or 1.0 (detected)
         - e_hat: estimated enemy position from Kalman filter (normalized by L)
         - v_hat: estimated enemy velocity from Kalman filter (normalized by v_e)
-        - All values are 0.0 before detection
+        - All enemy-related values are 0.0 before detection
     
-    Action (shape=2):
+    Action Space (spaces.Box, shape=2, dtype=float32):
         2D continuous action vector in [-1, 1]².
         - Normalized to unit vector if norm > eps
         - Defender displacement = v_d * dt * normalized_action
         - If action norm < eps, defender does not move
-        - Action controls defender heading at ALL times (policy-driven)
+        - Action controls defender heading at ALL times
     
     Reward (dense shaping for RL):
         +100 for intercepting enemy safely (WIN)
@@ -59,6 +98,12 @@ class SoldierEnv(gym.Env):
         - Soldier caught: dist_es < threat_radius (LOSS)
         - Unsafe intercept: dist_de < intercept_radius AND dist_es <= unsafe_intercept_radius (LOSS)
         - Timeout: step_count >= max_steps
+    
+    Gymnasium/SB3 Compatibility:
+        - Passes gymnasium.utils.env_checker.check_env()
+        - Compatible with Stable-Baselines3 algorithms
+        - Fixed-size observation and action spaces
+        - Proper reset() and step() signatures
     """
     
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
@@ -72,11 +117,22 @@ class SoldierEnv(gym.Env):
         """
         Initialize the SoldierEnv.
         
+        This environment is policy-agnostic: it accepts any 2D action vector
+        for defender control, whether from a scripted baseline or RL algorithm.
+        
         Args:
             config: Environment configuration. Uses defaults if None.
             render_mode: One of "human", "rgb_array", or None.
             use_kalman_obs: If True, observation uses Kalman estimates (e_hat, v_hat).
                            If False, uses legacy format with true enemy position.
+        
+        Example:
+            # For baseline evaluation
+            env = SoldierEnv()
+            
+            # For RL training with custom config
+            config = EnvConfig(v_d=20.0, max_steps=150)
+            env = SoldierEnv(config=config)
         """
         super().__init__()
         
@@ -84,13 +140,19 @@ class SoldierEnv(gym.Env):
         self.render_mode = render_mode
         self.use_kalman_obs = use_kalman_obs
         
-        # Observation space: normalized positions + detection flag + enemy info
-        # If use_kalman_obs=True (Kalman mode):
-        #   [soldier(2), defender(2), detected_flag(1), e_hat(2), v_hat(2)]
-        #   e_hat: estimated enemy position, v_hat: estimated velocity
-        # If use_kalman_obs=False (Legacy mode):
-        #   [soldier(2), defender(2), detected_flag(1), enemy_pos(2), rel_to_enemy(2)]
-        #   enemy_pos: TRUE enemy position, rel_to_enemy: defender→enemy vector
+        # =====================================================================
+        # OBSERVATION SPACE (fixed-size, normalized for RL)
+        # =====================================================================
+        # Shape: (9,), all values in [-1, 1]
+        # Layout: [soldier(2), defender(2), detected_flag(1), e_hat(2), v_hat(2)]
+        #
+        # If use_kalman_obs=True (default, recommended for RL):
+        #   - e_hat: Kalman estimated enemy position (zeros before detection)
+        #   - v_hat: Kalman estimated enemy velocity (zeros before detection)
+        #
+        # If use_kalman_obs=False (legacy mode):
+        #   - enemy_pos: TRUE enemy position (for debugging only)
+        #   - rel_to_enemy: defender→enemy vector
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
@@ -101,8 +163,18 @@ class SoldierEnv(gym.Env):
         # Track previous distance for reward shaping
         self._prev_defender_enemy_dist: float = 0.0
         
-        # Action space: 2D heading vector for defender
-        # Agent outputs a direction in [-1, 1]², normalized to unit vector
+        # =====================================================================
+        # ACTION SPACE (2D continuous heading vector)
+        # =====================================================================
+        # Shape: (2,), values in [-1, 1]
+        # Interpretation: 2D direction vector for defender movement
+        #   - Normalized to unit vector if norm > eps
+        #   - Defender moves: displacement = v_d * dt * normalized_action
+        #   - If norm < eps, defender stays stationary
+        #
+        # This is the same interface for both:
+        #   - Scripted policies: policy.act(obs, info) -> action
+        #   - RL algorithms: model.predict(obs) -> action
         self.action_space = spaces.Box(
             low=-1.0,
             high=1.0,
@@ -212,27 +284,38 @@ class SoldierEnv(gym.Env):
         """
         Execute one time step in the environment.
         
+        This is the unified interface for both baseline and RL control.
+        The environment applies the action to move the defender, then
+        updates all other entities (soldier, enemy) and computes reward.
+        
         Args:
-            action: 2D continuous action vector in [-1, 1]².
-                   Normalized to unit vector if norm > eps.
-                   Controls defender heading at all times.
+            action: 2D continuous action vector in [-1, 1]², shape=(2,).
+                   This can come from:
+                     - Scripted policy: policy.act(obs, info) -> np.ndarray
+                     - RL algorithm: model.predict(obs) -> (action, state)
+                   The action is normalized to a unit vector if norm > eps.
+                   If norm < eps, defender does not move.
         
         Returns:
-            observation: Concatenated positions [soldier, defender, enemy].
-            reward: +100 (intercept), -100 (loss), 0 (ongoing).
-            terminated: True if terminal condition reached.
-            truncated: False.
-            info: Additional information dict.
+            observation: Shape (9,) normalized state vector.
+            reward: Scalar reward (dense shaping for RL training).
+            terminated: True if episode ended (win/loss/timeout).
+            truncated: Always False (no external truncation).
+            info: Dict with additional state for debugging/visualization.
+        
+        Note:
+            The environment does NOT contain any policy logic.
+            All defender control comes from the external action.
         """
         assert self._soldier_pos is not None, "Call reset() before step()"
         
-        # Move soldier stochastically
+        # Move soldier stochastically (uncontrolled)
         self._move_soldier()
         
-        # Move enemy with weaving pursuit toward soldier
+        # Move enemy with weaving pursuit toward soldier (uncontrolled)
         self._move_enemy()
         
-        # Move defender based on agent's action (2D heading)
+        # Move defender based on external action (controlled via step())
         self._move_defender(action)
         
         self._step_count += 1
