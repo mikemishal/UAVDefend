@@ -78,7 +78,7 @@ def get_policy(name: str, **kwargs) -> Any:
         return RandomPolicy(**kwargs)
     
     elif policy_type == "ppo":
-        from uav_defend.policies.ppo_wrapper import PPOPolicyWrapper
+        from uav_defend.policies.rl.ppo_policy_wrapper import PPOPolicyWrapper
         
         model_path = kwargs.pop("model_path", None)
         if model_path is None:
