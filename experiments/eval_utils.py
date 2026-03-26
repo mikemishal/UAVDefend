@@ -18,11 +18,66 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import time
+from dataclasses import dataclass, field
 from typing import Callable, Iterable, Protocol, Any
 
 import numpy as np
 import pandas as pd
+
+
+@dataclass
+class Trajectory:
+    """Container for episode trajectory data."""
+    
+    seed: int
+    outcome: str
+    episode_length: int
+    
+    # Position histories (T x 2 arrays)
+    soldier_positions: np.ndarray
+    defender_positions: np.ndarray
+    enemy_positions: np.ndarray
+    estimated_enemy_positions: np.ndarray  # Kalman estimate
+    
+    # Additional metadata
+    detection_time: int = -1
+    intercept_time: int = -1
+    total_reward: float = 0.0
+    
+    def save(self, filepath: str) -> None:
+        """Save trajectory to .npz file."""
+        np.savez(
+            filepath,
+            seed=self.seed,
+            outcome=self.outcome,
+            episode_length=self.episode_length,
+            soldier_positions=self.soldier_positions,
+            defender_positions=self.defender_positions,
+            enemy_positions=self.enemy_positions,
+            estimated_enemy_positions=self.estimated_enemy_positions,
+            detection_time=self.detection_time,
+            intercept_time=self.intercept_time,
+            total_reward=self.total_reward,
+        )
+    
+    @classmethod
+    def load(cls, filepath: str) -> "Trajectory":
+        """Load trajectory from .npz file."""
+        data = np.load(filepath, allow_pickle=True)
+        return cls(
+            seed=int(data["seed"]),
+            outcome=str(data["outcome"]),
+            episode_length=int(data["episode_length"]),
+            soldier_positions=data["soldier_positions"],
+            defender_positions=data["defender_positions"],
+            enemy_positions=data["enemy_positions"],
+            estimated_enemy_positions=data["estimated_enemy_positions"],
+            detection_time=int(data["detection_time"]),
+            intercept_time=int(data["intercept_time"]),
+            total_reward=float(data["total_reward"]),
+        )
 
 
 class Policy(Protocol):
@@ -132,13 +187,212 @@ def run_episode(env, policy: Policy, seed: int) -> dict:
     }
 
 
+def run_episode_with_trajectory(env, policy: Policy, seed: int) -> tuple[dict, Trajectory]:
+    """
+    Run a single episode and capture full trajectory for visualization.
+    
+    Similar to run_episode but additionally records position history
+    for all agents at each timestep.
+    
+    Args:
+        env: A Gymnasium-compatible environment instance.
+        policy: A policy with `act(obs, info)` and `reset()` methods.
+        seed: Random seed for environment reset.
+    
+    Returns:
+        Tuple of (metrics_dict, Trajectory).
+    """
+    obs, info = env.reset(seed=seed)
+    policy.reset()
+    
+    # Helper to get e_hat with fallback to NaN (unobserved before detection)
+    def get_e_hat(info_dict):
+        e_hat = info_dict.get("e_hat")
+        if e_hat is not None:
+            return e_hat.copy()
+        # Before detection, e_hat is unknown - use NaN to distinguish from zeros
+        return np.array([np.nan, np.nan], dtype=np.float32)
+    
+    # Position histories (using correct internal attribute names)
+    soldier_positions = [env._soldier_pos.copy()]
+    defender_positions = [env._defender_pos.copy()]
+    enemy_positions = [env._enemy_pos.copy()]
+    estimated_enemy_positions = [get_e_hat(info)]
+    
+    # Track metrics
+    total_reward = 0.0
+    min_enemy_soldier_dist = info["enemy_soldier_dist"]
+    min_defender_enemy_dist = info["defender_enemy_dist"]
+    detection_time = None
+    intercept_time = None
+    
+    step = 0
+    done = False
+    
+    while not done:
+        action = policy.act(obs, info)
+        obs, reward, done, truncated, info = env.step(action)
+        step += 1
+        total_reward += reward
+        
+        # Record positions (using correct internal attribute names)
+        soldier_positions.append(env._soldier_pos.copy())
+        defender_positions.append(env._defender_pos.copy())
+        enemy_positions.append(env._enemy_pos.copy())
+        estimated_enemy_positions.append(get_e_hat(info))
+        
+        # Update minimum distances
+        min_enemy_soldier_dist = min(min_enemy_soldier_dist, info["enemy_soldier_dist"])
+        min_defender_enemy_dist = min(min_defender_enemy_dist, info["defender_enemy_dist"])
+        
+        # Track detection timing
+        if info["enemy_detected"] and detection_time is None:
+            detection_time = step
+        
+        if done or truncated:
+            break
+    
+    # Record intercept time if successful
+    if info["outcome"] == "intercepted":
+        intercept_time = step
+    
+    # Get config values
+    config = env.config
+    
+    # Build metrics dict (same as run_episode)
+    metrics = {
+        "seed": seed,
+        "outcome": info["outcome"],
+        "success": 1 if info["outcome"] == "intercepted" else 0,
+        "episode_length": step,
+        "total_reward": total_reward,
+        "detected": 1 if detection_time is not None else 0,
+        "detection_time": detection_time if detection_time is not None else -1,
+        "intercept_time": intercept_time if intercept_time is not None else -1,
+        "min_enemy_soldier_dist": min_enemy_soldier_dist,
+        "min_defender_enemy_dist": min_defender_enemy_dist,
+        "final_enemy_soldier_dist": info["enemy_soldier_dist"],
+        "final_defender_enemy_dist": info["defender_enemy_dist"],
+        "enemy_speed": config.v_e,
+        "defender_speed": config.v_d,
+        "detection_radius": config.detection_radius,
+        "intercept_radius": config.intercept_radius,
+        "threat_radius": config.threat_radius,
+    }
+    
+    # Build trajectory
+    trajectory = Trajectory(
+        seed=seed,
+        outcome=info["outcome"],
+        episode_length=step,
+        soldier_positions=np.array(soldier_positions),
+        defender_positions=np.array(defender_positions),
+        enemy_positions=np.array(enemy_positions),
+        estimated_enemy_positions=np.array(estimated_enemy_positions),
+        detection_time=detection_time if detection_time is not None else -1,
+        intercept_time=intercept_time if intercept_time is not None else -1,
+        total_reward=total_reward,
+    )
+    
+    return metrics, trajectory
+
+
+def select_representative_trajectories(
+    trajectories: list[Trajectory],
+    results_df: pd.DataFrame,
+) -> dict[str, Trajectory]:
+    """
+    Select representative trajectories for qualitative analysis.
+    
+    Selects:
+        - "success": A clean successful intercept
+        - "failure": A clear failure (soldier caught)
+        - "borderline": A late intercept (if available)
+    
+    Args:
+        trajectories: List of captured trajectories.
+        results_df: DataFrame with episode results (for filtering).
+    
+    Returns:
+        Dictionary mapping category to Trajectory.
+    """
+    selected = {}
+    
+    # Index trajectories by seed for lookup
+    traj_by_seed = {t.seed: t for t in trajectories}
+    
+    # 1. Success: find a cleanly successful episode (early intercept)
+    success_df = results_df[results_df["outcome"] == "intercepted"]
+    if len(success_df) > 0:
+        # Prefer median intercept time for "typical" success
+        median_intercept = success_df["intercept_time"].median()
+        success_df = success_df.copy()
+        success_df["dist_to_median"] = abs(success_df["intercept_time"] - median_intercept)
+        best_success_seed = success_df.sort_values("dist_to_median").iloc[0]["seed"]
+        if best_success_seed in traj_by_seed:
+            selected["success"] = traj_by_seed[int(best_success_seed)]
+    
+    # 2. Failure: clear failure (soldier caught)
+    failure_df = results_df[results_df["outcome"] == "soldier_caught"]
+    if len(failure_df) > 0:
+        # Prefer median episode length for "typical" failure
+        median_length = failure_df["episode_length"].median()
+        failure_df = failure_df.copy()
+        failure_df["dist_to_median"] = abs(failure_df["episode_length"] - median_length)
+        best_failure_seed = failure_df.sort_values("dist_to_median").iloc[0]["seed"]
+        if best_failure_seed in traj_by_seed:
+            selected["failure"] = traj_by_seed[int(best_failure_seed)]
+    
+    # 3. Borderline: late intercept (90th percentile intercept time)
+    if len(success_df) > 0:
+        p90_intercept = success_df["intercept_time"].quantile(0.9)
+        borderline_df = success_df[success_df["intercept_time"] >= p90_intercept]
+        if len(borderline_df) > 0:
+            # Pick first borderline case
+            borderline_seed = borderline_df.iloc[0]["seed"]
+            if borderline_seed in traj_by_seed:
+                selected["borderline"] = traj_by_seed[int(borderline_seed)]
+    
+    return selected
+
+
+def save_trajectories(
+    trajectories: dict[str, Trajectory],
+    output_dir: str,
+    policy_name: str = "",
+) -> list[str]:
+    """
+    Save representative trajectories to disk.
+    
+    Args:
+        trajectories: Dict mapping category name to Trajectory.
+        output_dir: Directory to save trajectories.
+        policy_name: Optional policy name prefix.
+    
+    Returns:
+        List of saved file paths.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    saved_paths = []
+    
+    for category, traj in trajectories.items():
+        prefix = f"{policy_name}_" if policy_name else ""
+        filename = f"{prefix}{category}_seed{traj.seed}.npz"
+        filepath = os.path.join(output_dir, filename)
+        traj.save(filepath)
+        saved_paths.append(filepath)
+    
+    return saved_paths
+
+
 def evaluate_policy(
     env_factory: Callable,
     policy: Policy,
     seeds: Iterable[int],
     verbose: bool = True,
     progress_interval: int = 50,
-) -> tuple[pd.DataFrame, dict]:
+    capture_trajectories: bool = False,
+) -> tuple[pd.DataFrame, dict, list[Trajectory] | None]:
     """
     Evaluate a policy over multiple episodes with different seeds.
     
@@ -152,14 +406,18 @@ def evaluate_policy(
         seeds: Iterable of integer seeds for each episode.
         verbose: If True, print progress updates.
         progress_interval: Print progress every N episodes.
+        capture_trajectories: If True, capture full trajectory data for
+                             later selection and visualization.
     
     Returns:
-        Tuple of (df, summary):
+        Tuple of (df, summary, trajectories):
             - df: DataFrame with one row per episode
             - summary: Dictionary of aggregated statistics
+            - trajectories: List of Trajectory objects (if capture_trajectories=True)
+                           or None otherwise
     
     Example:
-        >>> df, summary = evaluate_policy(
+        >>> df, summary, _ = evaluate_policy(
         ...     env_factory=lambda: SoldierEnv(),
         ...     policy=GreedyInterceptPolicy(),
         ...     seeds=range(100),
@@ -180,13 +438,20 @@ def evaluate_policy(
         print(f"Policy:       {policy_name}")
         print(f"Episodes:     {n_episodes}")
         print(f"Seed range:   [{min(seeds)}, {max(seeds)}]")
+        if capture_trajectories:
+            print(f"Trajectories: capturing")
         print("-" * 60)
     
     results = []
+    trajectories = [] if capture_trajectories else None
     start_time = time.time()
     
     for i, seed in enumerate(seeds):
-        result = run_episode(env, policy, seed)
+        if capture_trajectories:
+            result, traj = run_episode_with_trajectory(env, policy, seed)
+            trajectories.append(traj)
+        else:
+            result = run_episode(env, policy, seed)
         results.append(result)
         
         # Progress update
@@ -212,7 +477,7 @@ def evaluate_policy(
     # Compute summary statistics
     summary = summarize_results(df)
     
-    return df, summary
+    return df, summary, trajectories
 
 
 def summarize_results(df: pd.DataFrame) -> dict:
@@ -381,7 +646,8 @@ def compare_policies(
     policies: dict[str, Policy],
     seeds: Iterable[int],
     verbose: bool = True,
-) -> tuple[dict[str, pd.DataFrame], dict[str, dict]]:
+    capture_trajectories: bool = False,
+) -> tuple[dict[str, pd.DataFrame], dict[str, dict], dict[str, list[Trajectory]] | None]:
     """
     Compare multiple policies on the same set of seeds.
     
@@ -392,31 +658,38 @@ def compare_policies(
         policies: Dictionary mapping policy names to policy instances.
         seeds: Iterable of seeds (same seeds used for all policies).
         verbose: If True, print progress.
+        capture_trajectories: If True, capture trajectories for each policy.
     
     Returns:
-        Tuple of (dfs, summaries):
+        Tuple of (dfs, summaries, trajectories_dict):
             - dfs: Dict mapping policy name to results DataFrame
             - summaries: Dict mapping policy name to summary dict
+            - trajectories_dict: Dict mapping policy name to list of Trajectory
+                                (if capture_trajectories=True), else None
     """
     seeds = list(seeds)
     dfs = {}
     summaries = {}
+    trajectories_dict = {} if capture_trajectories else None
     
     for name, policy in policies.items():
         if verbose:
             print(f"\n>>> Evaluating: {name}")
         
-        df, summary = evaluate_policy(
+        df, summary, trajectories = evaluate_policy(
             env_factory=env_factory,
             policy=policy,
             seeds=seeds,
             verbose=verbose,
+            capture_trajectories=capture_trajectories,
         )
         
         dfs[name] = df
         summaries[name] = summary
+        if capture_trajectories:
+            trajectories_dict[name] = trajectories
         
         if verbose:
             print_summary(summary, title=f"SUMMARY: {name}")
     
-    return dfs, summaries
+    return dfs, summaries, trajectories_dict

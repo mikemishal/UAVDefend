@@ -38,6 +38,8 @@ from experiments.eval_utils import (
     evaluate_policy,
     print_summary,
     compare_policies,
+    select_representative_trajectories,
+    save_trajectories,
 )
 
 
@@ -48,6 +50,8 @@ def evaluate_single_policy(
     output_dir: str,
     model_path: str | None = None,
     verbose: bool = True,
+    save_traj: bool = False,
+    traj_output_dir: str | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Evaluate a single policy.
@@ -59,6 +63,8 @@ def evaluate_single_policy(
         output_dir: Directory to save results.
         model_path: Path to model file (required for PPO).
         verbose: Print progress.
+        save_traj: If True, save representative trajectories.
+        traj_output_dir: Directory for trajectories (default: results/baseline/trajectories/).
     
     Returns:
         Tuple of (DataFrame, summary dict).
@@ -77,12 +83,13 @@ def evaluate_single_policy(
     # Generate seeds
     seeds = range(seed_offset, seed_offset + n_episodes)
     
-    # Run evaluation
-    df, summary = evaluate_policy(
+    # Run evaluation (capture trajectories if requested)
+    df, summary, trajectories = evaluate_policy(
         env_factory=env_factory,
         policy=policy,
         seeds=seeds,
         verbose=verbose,
+        capture_trajectories=save_traj,
     )
     
     # Print summary
@@ -95,6 +102,26 @@ def evaluate_single_policy(
     df.to_csv(csv_path, index=False)
     print(f"\nResults saved to: {csv_path}")
     
+    # Save representative trajectories if requested
+    if save_traj and trajectories:
+        if traj_output_dir is None:
+            project_root = os.path.join(os.path.dirname(__file__), '..')
+            traj_output_dir = os.path.join(project_root, 'results', 'baseline', 'trajectories')
+        
+        # Select representative examples
+        selected = select_representative_trajectories(trajectories, df)
+        
+        # Save them
+        saved_paths = save_trajectories(
+            selected,
+            output_dir=traj_output_dir,
+            policy_name=get_policy_name(policy),
+        )
+        
+        print(f"\nSaved {len(saved_paths)} representative trajectories:")
+        for path in saved_paths:
+            print(f"  - {os.path.basename(path)}")
+    
     return df, summary
 
 
@@ -105,6 +132,8 @@ def evaluate_multiple_policies(
     output_dir: str,
     model_path: str | None = None,
     verbose: bool = True,
+    save_traj: bool = False,
+    traj_output_dir: str | None = None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, dict]]:
     """
     Evaluate multiple policies on the same seeds.
@@ -116,6 +145,8 @@ def evaluate_multiple_policies(
         output_dir: Directory to save results.
         model_path: Path to model file (for PPO).
         verbose: Print progress.
+        save_traj: If True, save representative trajectories.
+        traj_output_dir: Directory for trajectories.
     
     Returns:
         Tuple of (dict of DataFrames, dict of summaries).
@@ -137,11 +168,12 @@ def evaluate_multiple_policies(
     seeds = range(seed_offset, seed_offset + n_episodes)
     
     # Run comparison
-    dfs, summaries = compare_policies(
+    dfs, summaries, trajectories_dict = compare_policies(
         env_factory=env_factory,
         policies=policies,
         seeds=seeds,
         verbose=verbose,
+        capture_trajectories=save_traj,
     )
     
     # Save results
@@ -179,6 +211,22 @@ def evaluate_multiple_policies(
               f"{s['mean_episode_length']:>10.1f}")
     print("=" * 60)
     
+    # Save representative trajectories if requested
+    if save_traj and trajectories_dict:
+        if traj_output_dir is None:
+            project_root = os.path.join(os.path.dirname(__file__), '..')
+            traj_output_dir = os.path.join(project_root, 'results', 'baseline', 'trajectories')
+        
+        print("\nSaving representative trajectories...")
+        for policy_name, trajectories in trajectories_dict.items():
+            selected = select_representative_trajectories(trajectories, dfs[policy_name])
+            saved_paths = save_trajectories(
+                selected,
+                output_dir=traj_output_dir,
+                policy_name=policy_name.lower(),
+            )
+            print(f"  {policy_name}: {len(saved_paths)} trajectories")
+    
     return dfs, summaries
 
 
@@ -210,6 +258,14 @@ def main():
         "--quiet", action="store_true",
         help="Suppress progress output"
     )
+    parser.add_argument(
+        "--save-trajectories", action="store_true",
+        help="Save representative trajectories (success, failure, borderline)"
+    )
+    parser.add_argument(
+        "--traj-output-dir", type=str, default=None,
+        help="Directory for trajectories (default: results/baseline/trajectories/)"
+    )
     
     args = parser.parse_args()
     
@@ -229,6 +285,8 @@ def main():
             output_dir=output_dir,
             model_path=args.model_path,
             verbose=not args.quiet,
+            save_traj=args.save_trajectories,
+            traj_output_dir=args.traj_output_dir,
         )
         return df, summary
     else:
@@ -239,6 +297,8 @@ def main():
             output_dir=output_dir,
             model_path=args.model_path,
             verbose=not args.quiet,
+            save_traj=args.save_trajectories,
+            traj_output_dir=args.traj_output_dir,
         )
         return dfs, summaries
 
