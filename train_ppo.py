@@ -79,7 +79,7 @@ def main():
     # Train
     print("Starting training...")
     print("=" * 60)
-    total_timesteps = 500_000
+    total_timesteps = 1_000_000
     model.learn(
         total_timesteps=total_timesteps,
         callback=callback,

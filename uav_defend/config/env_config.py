@@ -40,10 +40,12 @@ class EnvConfig:
     # RL reward shaping parameters
     reward_intercept: float = 100.0  # Reward for intercepting enemy (WIN)
     reward_soldier_caught: float = -100.0  # Penalty for enemy catching soldier (LOSS)
-    reward_unsafe_intercept: float = -100.0  # Penalty for unsafe intercept (too close to soldier)
+    reward_unsafe_intercept: float = -150.0  # Severe penalty for unsafe intercept (discourage risky behavior)
     reward_timeout: float = -100.0  # Penalty for timeout (failed to intercept)
-    reward_progress_scale: float = 5.0  # Scale for distance progress reward
+    reward_progress_scale: float = 5.0  # Scale for distance progress reward (closing on enemy)
     reward_time_penalty: float = -0.05  # Small time penalty per step
+    reward_tracking_scale: float = 1.0  # Scale for tracking error improvement reward (after detection)
+    reward_proximity_warning: float = -0.5  # Per-step penalty when enemy is close to soldier (increased)
     
     # =========================================================================
     # Distance Thresholds (geometry parameters)
@@ -52,7 +54,7 @@ class EnvConfig:
     # - intercept_radius: neutralization distance (defender catches enemy)
     # - unsafe_intercept_radius: collateral risk zone around soldier
     # =========================================================================
-    detection_radius: float = 30.0  # Maximum sensing range for detecting the enemy drone
+    detection_radius: float = 15.0  # Maximum sensing range for detecting the enemy drone
     intercept_radius: float = 2.5   # Distance at which defender neutralizes/intercepts the enemy
     threat_radius: float = 2.0      # Enemy reaches soldier and causes mission failure
     unsafe_intercept_radius: float = 3.5  # If intercept occurs this close to soldier, it's a failure
