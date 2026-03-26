@@ -28,8 +28,8 @@ class SoldierEnv(gym.Env):
         - Before detection: Enemy state is MASKED (zeros)
         - After detection: Kalman filter estimates enemy state from noisy measurements
         - Detection occurs when defender is within detection_radius of enemy
-        - Before detection, defender follows soldier automatically
         - TRUE enemy state is NEVER revealed to the RL agent
+        - Defender motion is controlled entirely by external policy (action-driven)
     
     Observation (shape=9, normalized to [-1, 1]):
         [soldier_x, soldier_y, defender_x, defender_y, detected_flag,
@@ -40,9 +40,11 @@ class SoldierEnv(gym.Env):
         - All values are 0.0 before detection
     
     Action (shape=2):
-        2D heading vector in [-1, 1]². Normalized to unit vector.
-        - Before detection: Action is IGNORED (defender follows soldier)
-        - After detection: Action controls defender heading
+        2D continuous action vector in [-1, 1]².
+        - Normalized to unit vector if norm > eps
+        - Defender displacement = v_d * dt * normalized_action
+        - If action norm < eps, defender does not move
+        - Action controls defender heading at ALL times (policy-driven)
     
     Reward (dense shaping for RL):
         +100 for intercepting enemy safely (WIN)
@@ -211,8 +213,9 @@ class SoldierEnv(gym.Env):
         Execute one time step in the environment.
         
         Args:
-            action: 2D heading vector for defender in [-1, 1]².
-                   Will be normalized to unit vector.
+            action: 2D continuous action vector in [-1, 1]².
+                   Normalized to unit vector if norm > eps.
+                   Controls defender heading at all times.
         
         Returns:
             observation: Concatenated positions [soldier, defender, enemy].
@@ -317,20 +320,49 @@ class SoldierEnv(gym.Env):
     
     def _move_defender(self, action: np.ndarray) -> None:
         """
-        Move the defender drone based on detection state and agent's action.
+        Move the defender drone based on externally provided action.
         
         Args:
-            action: 2D heading vector from RL agent in [-1, 1]².
+            action: 2D continuous action vector in [-1, 1]².
+                   Normalized to unit vector if norm > eps.
+                   Defender displacement = v_d * dt * normalized_action.
+                   If action norm < eps, defender does not move.
         
-        Behavior:
-        - If enemy NOT detected (distance > detection_radius):
-          Defender follows soldier (stays co-located), action IGNORED
-        - If enemy detected (distance <= detection_radius):
-          Use RL agent's action to control heading
-        - Once detected, enemy stays tracked (detection persists)
+        The defender is controlled entirely by the external policy.
+        Detection and Kalman tracking are handled separately in _update_detection().
         """
         eps = self.config.eps
         
+        # Update detection and Kalman tracking (independent of defender motion)
+        self._update_detection()
+        
+        # Action-driven defender motion
+        action = np.asarray(action, dtype=np.float32)
+        action_norm = np.linalg.norm(action)
+        
+        # If action is too small, defender doesn't move
+        if action_norm < eps:
+            return
+        
+        # Normalize action to unit vector
+        direction = action / action_norm
+        
+        # Move defender: displacement = v_d * dt * normalized_action
+        displacement = self.config.v_d * self.config.dt * direction
+        new_pos = self._defender_pos + displacement
+        
+        # Apply reflecting boundary conditions
+        new_pos = self._reflect_boundary(new_pos)
+        self._defender_pos = new_pos.astype(np.float32)
+    
+    def _update_detection(self) -> None:
+        """
+        Update enemy detection state and Kalman filter tracking.
+        
+        Detection occurs when defender is within detection_radius of enemy.
+        Once detected, tracking persists and Kalman filter is updated each step.
+        This is decoupled from defender motion to support external policies.
+        """
         # Check for detection (only if not already detected)
         if not self._enemy_detected:
             defender_enemy_dist = np.linalg.norm(self._enemy_pos - self._defender_pos)
@@ -354,42 +386,6 @@ class SoldierEnv(gym.Env):
             self._kf.update(noisy_measurement.astype(np.float64))
             self._e_hat = self._kf.get_position()
             self._v_hat = self._kf.get_velocity()
-        
-        if not self._enemy_detected:
-            # Enemy not detected: defender follows soldier (stays with soldier)
-            # Action is IGNORED - defender moves autonomously toward soldier
-            to_soldier = self._soldier_pos - self._defender_pos
-            dist_to_soldier = np.linalg.norm(to_soldier)
-            
-            if dist_to_soldier < eps:
-                # Already at soldier position
-                return
-            
-            direction = to_soldier / dist_to_soldier
-            # Move toward soldier, but don't overshoot
-            max_move = self.config.v_d * self.config.dt
-            move_dist = min(max_move, dist_to_soldier)
-            displacement = move_dist * direction
-            new_pos = self._defender_pos + displacement
-        else:
-            # Enemy detected: use RL action to control heading
-            action = np.asarray(action, dtype=np.float32)
-            action_norm = np.linalg.norm(action)
-            
-            # If action is too small, defender doesn't move
-            if action_norm < eps:
-                return
-            
-            # Normalize action to unit vector
-            direction = action / action_norm
-            
-            # Move defender
-            displacement = self.config.v_d * self.config.dt * direction
-            new_pos = self._defender_pos + displacement
-        
-        # Apply reflecting boundary conditions
-        new_pos = self._reflect_boundary(new_pos)
-        self._defender_pos = new_pos.astype(np.float32)
     
     def _move_soldier(self) -> None:
         """
