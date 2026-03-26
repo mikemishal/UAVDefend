@@ -260,6 +260,15 @@ def train_ppo(
         model.learning_rate = learning_rate
     else:
         print("Creating new PPO model")
+        
+        # Check if tensorboard is available
+        try:
+            import tensorboard
+            tb_log = str(LOG_DIR / "tensorboard")
+        except ImportError:
+            tb_log = None
+            print("  (TensorBoard not installed - logging disabled)")
+        
         model = PPO(
             policy="MlpPolicy",
             env=train_env,
@@ -275,7 +284,7 @@ def train_ppo(
             gae_lambda=gae_lambda,
             seed=seed,
             verbose=verbose,
-            tensorboard_log=str(LOG_DIR / "tensorboard"),
+            tensorboard_log=tb_log,
         )
     
     # Print hyperparameters
