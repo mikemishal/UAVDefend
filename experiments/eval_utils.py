@@ -641,6 +641,53 @@ def print_summary(summary: dict, title: str = "SUMMARY STATISTICS") -> None:
     print("=" * 60)
 
 
+def format_comparison_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Format a results DataFrame to the standard comparison schema.
+    
+    This ensures baseline and RL evaluation CSVs have identical columns
+    for one-to-one comparison. The schema is designed for reproducibility
+    and easy diff/merge.
+    
+    Standard comparison columns (in order):
+        seed, outcome, success, episode_length, detected, detection_time,
+        intercept_time, enemy_speed, defender_speed, detection_radius,
+        intercept_radius, threat_radius, min_enemy_soldier_dist,
+        min_defender_enemy_dist, num_episodes
+    
+    Args:
+        df: Raw results DataFrame from evaluate_policy().
+    
+    Returns:
+        DataFrame with exactly the comparison columns, in order.
+    """
+    # Add num_episodes column (same value for all rows)
+    result = df.copy()
+    result["num_episodes"] = len(df)
+    
+    # Define the exact column order for comparison
+    comparison_columns = [
+        "seed",
+        "outcome",
+        "success",
+        "episode_length",
+        "detected",
+        "detection_time",
+        "intercept_time",
+        "enemy_speed",
+        "defender_speed",
+        "detection_radius",
+        "intercept_radius",
+        "threat_radius",
+        "min_enemy_soldier_dist",
+        "min_defender_enemy_dist",
+        "num_episodes",
+    ]
+    
+    # Select only the comparison columns (ignore extras like total_reward)
+    return result[comparison_columns]
+
+
 def compare_policies(
     env_factory: Callable,
     policies: dict[str, Policy],

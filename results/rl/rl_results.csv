@@ -1,0 +1,11 @@
+seed,outcome,success,episode_length,detected,detection_time,intercept_time,enemy_speed,defender_speed,detection_radius,intercept_radius,threat_radius,min_enemy_soldier_dist,min_defender_enemy_dist,num_episodes
+0,intercepted,1,29,1,8,29,12.0,18.0,15.0,2.5,2.0,2.0100589,1.6138446,10
+1,soldier_caught,0,22,1,10,-1,12.0,18.0,15.0,2.5,2.0,1.9227045,4.876176,10
+2,soldier_caught,0,17,1,8,-1,12.0,18.0,15.0,2.5,2.0,1.9580301,4.1621127,10
+3,intercepted,1,26,1,10,26,12.0,18.0,15.0,2.5,2.0,2.3696434,2.2150784,10
+4,soldier_caught,0,17,1,12,-1,12.0,18.0,15.0,2.5,2.0,1.7966875,8.359659,10
+5,soldier_caught,0,18,1,13,-1,12.0,18.0,15.0,2.5,2.0,1.658934,3.1025825,10
+6,soldier_caught,0,35,1,9,-1,12.0,18.0,15.0,2.5,2.0,0.6595418,3.6202383,10
+7,unsafe_intercept,0,41,1,10,-1,12.0,18.0,15.0,2.5,2.0,2.2679396,0.82711685,10
+8,intercepted,1,18,1,13,18,12.0,18.0,15.0,2.5,2.0,3.3245125,1.5514646,10
+9,unsafe_intercept,0,19,1,9,-1,12.0,18.0,15.0,2.5,2.0,2.3151402,1.9992999,10
