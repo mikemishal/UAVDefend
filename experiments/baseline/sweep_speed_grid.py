@@ -27,6 +27,12 @@ from uav_defend.config.env_config import EnvConfig
 from uav_defend.policies import GreedyInterceptPolicy
 
 from experiments.eval_utils import evaluate_policy
+from experiments.experiment_config import (
+    CONFIG,
+    SWEEP_CONFIG,
+    format_speeds_for_cli,
+    parse_speeds_from_cli,
+)
 
 
 def sweep_speed_grid(
@@ -253,24 +259,30 @@ def plot_contour(df: pd.DataFrame, output_path: str, show: bool = False) -> None
 
 
 def main():
+    # Get defaults from shared config
+    grid_defaults = SWEEP_CONFIG["speed_grid"]
+    default_defender = format_speeds_for_cli(grid_defaults["defender_speeds"])
+    default_enemy = format_speeds_for_cli(grid_defaults["enemy_speeds"])
+    default_episodes = grid_defaults["n_episodes"]
+    
     parser = argparse.ArgumentParser(
         description="2D parameter sweep: defender speed vs enemy speed"
     )
     parser.add_argument(
-        "--n-episodes", type=int, default=100,
-        help="Number of episodes per grid point (default: 100)"
+        "--n-episodes", type=int, default=default_episodes,
+        help=f"Number of episodes per grid point (default: {default_episodes})"
     )
     parser.add_argument(
-        "--defender-speeds", type=str, default="10,12,14,16,18,20,22",
-        help="Comma-separated list of defender speeds"
+        "--defender-speeds", type=str, default=default_defender,
+        help=f"Comma-separated list of defender speeds (default: {default_defender})"
     )
     parser.add_argument(
-        "--enemy-speeds", type=str, default="8,10,12,14,16,18",
-        help="Comma-separated list of enemy speeds"
+        "--enemy-speeds", type=str, default=default_enemy,
+        help=f"Comma-separated list of enemy speeds (default: {default_enemy})"
     )
     parser.add_argument(
-        "--seed-offset", type=int, default=0,
-        help="Starting seed for reproducibility (default: 0)"
+        "--seed-offset", type=int, default=CONFIG.SEED_OFFSET,
+        help=f"Starting seed for reproducibility (default: {CONFIG.SEED_OFFSET})"
     )
     parser.add_argument(
         "--output-dir", type=str, default=None,
@@ -287,9 +299,9 @@ def main():
     
     args = parser.parse_args()
     
-    # Parse speeds
-    defender_speeds = [float(s.strip()) for s in args.defender_speeds.split(",")]
-    enemy_speeds = [float(s.strip()) for s in args.enemy_speeds.split(",")]
+    # Parse speeds using shared utility
+    defender_speeds = parse_speeds_from_cli(args.defender_speeds)
+    enemy_speeds = parse_speeds_from_cli(args.enemy_speeds)
     
     # Run sweep
     df = sweep_speed_grid(

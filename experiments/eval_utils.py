@@ -119,6 +119,10 @@ def run_episode(env, policy: Policy, seed: int) -> dict:
             - final_enemy_soldier_dist: Distance at episode end
             - final_defender_enemy_dist: Distance at episode end
             - env_config: Dictionary of environment parameters
+            
+        When Kalman tracking is enabled (tracking_error in info):
+            - mean_tracking_error: Average tracking error during episode
+            - final_tracking_error: Tracking error at episode end
     """
     obs, info = env.reset(seed=seed)
     policy.reset()
@@ -129,6 +133,10 @@ def run_episode(env, policy: Policy, seed: int) -> dict:
     min_defender_enemy_dist = info["defender_enemy_dist"]
     detection_time = None
     intercept_time = None
+    
+    # Kalman tracking error (when available)
+    tracking_errors = []
+    final_tracking_error = None
     
     step = 0
     done = False
@@ -147,6 +155,11 @@ def run_episode(env, policy: Policy, seed: int) -> dict:
         if info["enemy_detected"] and detection_time is None:
             detection_time = step
         
+        # Track Kalman tracking error (only when detected, i.e., tracking_error is not None)
+        if info.get("tracking_error") is not None:
+            tracking_errors.append(info["tracking_error"])
+            final_tracking_error = info["tracking_error"]
+        
         if done or truncated:
             break
     
@@ -157,7 +170,8 @@ def run_episode(env, policy: Policy, seed: int) -> dict:
     # Get config values
     config = env.config
     
-    return {
+    # Build base metrics dict
+    metrics = {
         # Episode identifiers
         "seed": seed,
         
@@ -185,6 +199,13 @@ def run_episode(env, policy: Policy, seed: int) -> dict:
         "intercept_radius": config.intercept_radius,
         "threat_radius": config.threat_radius,
     }
+    
+    # Add Kalman tracking metrics if available
+    if tracking_errors:
+        metrics["mean_tracking_error"] = float(np.mean(tracking_errors))
+        metrics["final_tracking_error"] = float(final_tracking_error) if final_tracking_error is not None else float("nan")
+    
+    return metrics
 
 
 def run_episode_with_trajectory(env, policy: Policy, seed: int) -> tuple[dict, Trajectory]:
@@ -226,6 +247,10 @@ def run_episode_with_trajectory(env, policy: Policy, seed: int) -> tuple[dict, T
     detection_time = None
     intercept_time = None
     
+    # Kalman tracking error (when available)
+    tracking_errors = []
+    final_tracking_error = None
+    
     step = 0
     done = False
     
@@ -248,6 +273,11 @@ def run_episode_with_trajectory(env, policy: Policy, seed: int) -> tuple[dict, T
         # Track detection timing
         if info["enemy_detected"] and detection_time is None:
             detection_time = step
+        
+        # Track Kalman tracking error (only when detected, i.e., tracking_error is not None)
+        if info.get("tracking_error") is not None:
+            tracking_errors.append(info["tracking_error"])
+            final_tracking_error = info["tracking_error"]
         
         if done or truncated:
             break
@@ -279,6 +309,11 @@ def run_episode_with_trajectory(env, policy: Policy, seed: int) -> tuple[dict, T
         "intercept_radius": config.intercept_radius,
         "threat_radius": config.threat_radius,
     }
+    
+    # Add Kalman tracking metrics if available
+    if tracking_errors:
+        metrics["mean_tracking_error"] = float(np.mean(tracking_errors))
+        metrics["final_tracking_error"] = float(final_tracking_error) if final_tracking_error is not None else float("nan")
     
     # Build trajectory
     trajectory = Trajectory(
@@ -685,6 +720,67 @@ def format_comparison_df(df: pd.DataFrame) -> pd.DataFrame:
     ]
     
     # Select only the comparison columns (ignore extras like total_reward)
+    return result[comparison_columns]
+
+
+def format_rl_kalman_comparison_df(
+    df: pd.DataFrame,
+    model_version: str = "unknown",
+) -> pd.DataFrame:
+    """
+    Format a results DataFrame to the RL-Kalman comparison schema.
+    
+    Extends the standard comparison schema with Kalman-specific columns:
+    - mean_tracking_error: Average tracking error during episode
+    - final_tracking_error: Tracking error at episode end
+    - model_version: Version identifier for the trained model
+    
+    Standard columns (in order):
+        seed, outcome, success, episode_length, detected, detection_time,
+        intercept_time, enemy_speed, defender_speed, detection_radius,
+        intercept_radius, threat_radius, min_enemy_soldier_dist,
+        min_defender_enemy_dist, num_episodes, model_version,
+        mean_tracking_error, final_tracking_error
+    
+    Args:
+        df: Raw results DataFrame from evaluate_policy() with Kalman env.
+        model_version: Model version string for identification.
+    
+    Returns:
+        DataFrame with RL-Kalman comparison columns, in order.
+    """
+    result = df.copy()
+    result["num_episodes"] = len(df)
+    result["model_version"] = model_version
+    
+    # Fill missing Kalman columns with NaN if not present
+    if "mean_tracking_error" not in result.columns:
+        result["mean_tracking_error"] = float("nan")
+    if "final_tracking_error" not in result.columns:
+        result["final_tracking_error"] = float("nan")
+    
+    # Define the exact column order for RL-Kalman comparison
+    comparison_columns = [
+        "seed",
+        "outcome",
+        "success",
+        "episode_length",
+        "detected",
+        "detection_time",
+        "intercept_time",
+        "enemy_speed",
+        "defender_speed",
+        "detection_radius",
+        "intercept_radius",
+        "threat_radius",
+        "min_enemy_soldier_dist",
+        "min_defender_enemy_dist",
+        "num_episodes",
+        "model_version",
+        "mean_tracking_error",
+        "final_tracking_error",
+    ]
+    
     return result[comparison_columns]
 
 

@@ -21,7 +21,7 @@ import numpy as np
 from gymnasium import spaces
 
 from uav_defend.config.env_config import EnvConfig
-from kalman_tracker import KalmanTracker
+from uav_defend.tracking import EnemyKalmanFilter
 
 
 class SoldierEnv(gym.Env):
@@ -112,7 +112,6 @@ class SoldierEnv(gym.Env):
         self,
         config: EnvConfig | None = None,
         render_mode: str | None = None,
-        use_kalman_obs: bool = True,
     ):
         """
         Initialize the SoldierEnv.
@@ -122,37 +121,41 @@ class SoldierEnv(gym.Env):
         
         Args:
             config: Environment configuration. Uses defaults if None.
+                    - If config.use_kalman_tracking=True: observation contains
+                      Kalman estimates (e_hat, v_hat) - for RL-Kalman track
+                    - If config.use_kalman_tracking=False: observation contains
+                      true enemy position - for direct RL track
             render_mode: One of "human", "rgb_array", or None.
-            use_kalman_obs: If True, observation uses Kalman estimates (e_hat, v_hat).
-                           If False, uses legacy format with true enemy position.
         
         Example:
-            # For baseline evaluation
-            env = SoldierEnv()
+            # Direct RL track (true enemy state in observations)
+            config = EnvConfig(use_kalman_tracking=False)
+            env = SoldierEnv(config=config)
             
-            # For RL training with custom config
-            config = EnvConfig(v_d=20.0, max_steps=150)
+            # RL-Kalman track (Kalman estimates in observations)
+            config = EnvConfig(use_kalman_tracking=True)
             env = SoldierEnv(config=config)
         """
         super().__init__()
         
         self.config = config if config is not None else EnvConfig()
         self.render_mode = render_mode
-        self.use_kalman_obs = use_kalman_obs
         
         # =====================================================================
         # OBSERVATION SPACE (fixed-size, normalized for RL)
         # =====================================================================
         # Shape: (9,), all values in [-1, 1]
-        # Layout: [soldier(2), defender(2), detected_flag(1), e_hat(2), v_hat(2)]
+        # Layout: [soldier(2), defender(2), detected_flag(1), enemy_info(4)]
         #
-        # If use_kalman_obs=True (default, recommended for RL):
+        # If config.use_kalman_tracking=True (RL-Kalman track):
         #   - e_hat: Kalman estimated enemy position (zeros before detection)
         #   - v_hat: Kalman estimated enemy velocity (zeros before detection)
+        #   Policy acts on ESTIMATED state, not ground truth.
         #
-        # If use_kalman_obs=False (legacy mode):
-        #   - enemy_pos: TRUE enemy position (for debugging only)
-        #   - rel_to_enemy: defender→enemy vector
+        # If config.use_kalman_tracking=False (direct RL track):
+        #   - enemy_pos: TRUE enemy position (zeros before detection)
+        #   - rel_to_enemy: defender→enemy vector (zeros before detection)
+        #   Policy acts on TRUE state (for baseline comparison).
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
@@ -192,13 +195,14 @@ class SoldierEnv(gym.Env):
         self._np_random: np.random.Generator | None = None
         
         # Kalman filter for enemy tracking (initialized on first detection)
-        self._kf: KalmanTracker | None = None
+        self._kf: EnemyKalmanFilter | None = None
         self._e_hat: np.ndarray | None = None  # Estimated enemy position
         self._v_hat: np.ndarray | None = None  # Estimated enemy velocity
         self._prev_tracking_error: float | None = None  # For tracking error improvement reward
         
         # Measurement noise standard deviation for enemy position sensing
-        self._measurement_noise_std: float = 0.5  # Lower = better Kalman tracking
+        # Derived from config measurement_var (variance = std^2)
+        self._measurement_noise_std: float = np.sqrt(self.config.measurement_var)
     
     def reset(
         self,
@@ -440,11 +444,18 @@ class SoldierEnv(gym.Env):
     
     def _update_detection(self) -> None:
         """
-        Update enemy detection state and Kalman filter tracking.
+        Update enemy detection state and optionally Kalman filter tracking.
         
         Detection occurs when defender is within detection_radius of enemy.
-        Once detected, tracking persists and Kalman filter is updated each step.
-        This is decoupled from defender motion to support external policies.
+        Once detected, tracking persists.
+        
+        If use_kalman_tracking=True:
+            - Kalman filter estimates enemy state from noisy measurements
+            - predict() and update() called each step after detection
+        
+        If use_kalman_tracking=False:
+            - e_hat and v_hat use true enemy state (no filtering)
+            - Preserves backward compatibility with existing scripts
         """
         # Check for detection (only if not already detected)
         if not self._enemy_detected:
@@ -452,23 +463,47 @@ class SoldierEnv(gym.Env):
             if defender_enemy_dist <= self.config.detection_radius:
                 self._enemy_detected = True  # Start tracking!
                 
-                # Initialize Kalman filter with first noisy measurement
-                self._kf = KalmanTracker(dt=self.config.dt)
+                if self.config.use_kalman_tracking:
+                    # Initialize Kalman filter with first noisy measurement
+                    self._kf = EnemyKalmanFilter(
+                        dt=self.config.dt,
+                        process_var=self.config.process_var,
+                        measurement_var=self.config.measurement_var,
+                    )
+                    noisy_measurement = self._enemy_pos + self._np_random.normal(
+                        0.0, self._measurement_noise_std, size=(2,)
+                    )
+                    self._kf.initialize(noisy_measurement.astype(np.float64))
+                    self._e_hat = self._kf.get_position().astype(np.float32)
+                    self._v_hat = self._kf.get_velocity().astype(np.float32)
+                else:
+                    # No Kalman: use true enemy state directly
+                    self._e_hat = self._enemy_pos.copy()
+                    self._v_hat = np.zeros(2, dtype=np.float32)  # Velocity unknown without filter
+        else:
+            # Already detected: update tracking
+            if self.config.use_kalman_tracking and self._kf is not None:
+                # Kalman predict + update with noisy measurement
+                self._kf.predict()
                 noisy_measurement = self._enemy_pos + self._np_random.normal(
                     0.0, self._measurement_noise_std, size=(2,)
                 )
-                self._kf.initialize(noisy_measurement.astype(np.float64))
-                self._e_hat = self._kf.get_position()
-                self._v_hat = self._kf.get_velocity()
-        else:
-            # Already detected: predict and update Kalman filter
-            self._kf.predict()
-            noisy_measurement = self._enemy_pos + self._np_random.normal(
-                0.0, self._measurement_noise_std, size=(2,)
-            )
-            self._kf.update(noisy_measurement.astype(np.float64))
-            self._e_hat = self._kf.get_position()
-            self._v_hat = self._kf.get_velocity()
+                self._kf.update(noisy_measurement.astype(np.float64))
+                
+                # Apply lead time prediction if configured
+                if self.config.lead_time > 0.0:
+                    # Extrapolate position forward by lead_time
+                    pos = self._kf.get_position()
+                    vel = self._kf.get_velocity()
+                    self._e_hat = (pos + vel * self.config.lead_time).astype(np.float32)
+                else:
+                    self._e_hat = self._kf.get_position().astype(np.float32)
+                self._v_hat = self._kf.get_velocity().astype(np.float32)
+            else:
+                # No Kalman: use true enemy state directly
+                self._e_hat = self._enemy_pos.copy()
+                # Estimate velocity from position change (simple finite difference)
+                # For simplicity, keep as zeros when not using Kalman
     
     def _move_soldier(self) -> None:
         """
@@ -578,20 +613,26 @@ class SoldierEnv(gym.Env):
         """
         Get normalized observation for RL with partial observability.
         
+        The observation format depends on config.use_kalman_tracking:
+        
         Returns:
-            obs: Array of shape (9,).
+            obs: Array of shape (9,), all values normalized to [-1, 1].
             
-            If use_kalman_obs=True (Kalman mode):
+            If config.use_kalman_tracking=True (RL-Kalman track):
                 [soldier_x, soldier_y, defender_x, defender_y, detected_flag,
                  e_hat_x, e_hat_y, v_hat_x, v_hat_y]
                 - e_hat: Kalman estimated enemy position (normalized by L)
                 - v_hat: Kalman estimated enemy velocity (normalized by v_e)
+                - All enemy info is zeros before detection
+                - Policy acts on ESTIMATED state, not ground truth
                 
-            If use_kalman_obs=False (Legacy mode):
+            If config.use_kalman_tracking=False (direct RL track):
                 [soldier_x, soldier_y, defender_x, defender_y, detected_flag,
                  enemy_x, enemy_y, rel_x, rel_y]
                 - enemy: TRUE enemy position (normalized by L)
                 - rel: relative position from defender to enemy (normalized by L)
+                - All enemy info is zeros before detection
+                - Policy acts on TRUE state
         """
         L = self.config.L
         v_e = self.config.v_e
@@ -603,8 +644,9 @@ class SoldierEnv(gym.Env):
         # Detection flag
         detected_flag = np.array([1.0 if self._enemy_detected else 0.0])
         
-        if self.use_kalman_obs:
-            # KALMAN MODE: Use Kalman filter estimates
+        if self.config.use_kalman_tracking:
+            # RL-KALMAN TRACK: Use Kalman filter estimates
+            # Policy acts on estimated state, not ground truth
             if self._enemy_detected and self._e_hat is not None:
                 e_hat_norm = np.clip(self._e_hat / L, -1.0, 1.0)
                 v_hat_norm = np.clip(self._v_hat / v_e, -1.0, 1.0)
@@ -620,7 +662,8 @@ class SoldierEnv(gym.Env):
                 v_hat_norm
             ]).astype(np.float32)
         else:
-            # LEGACY MODE: Use true enemy position
+            # DIRECT RL TRACK: Use true enemy position
+            # Policy acts on ground truth (for baseline comparison)
             if self._enemy_detected:
                 enemy_norm = self._enemy_pos / L
                 defender_to_enemy = (self._enemy_pos - self._defender_pos) / L

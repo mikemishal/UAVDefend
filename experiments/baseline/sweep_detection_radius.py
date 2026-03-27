@@ -26,6 +26,12 @@ from uav_defend.config.env_config import EnvConfig
 from uav_defend.policies import GreedyInterceptPolicy
 
 from experiments.eval_utils import evaluate_policy
+from experiments.experiment_config import (
+    CONFIG,
+    SWEEP_CONFIG,
+    format_speeds_for_cli,
+    parse_speeds_from_cli,
+)
 
 
 def sweep_detection_radius(
@@ -184,20 +190,25 @@ def plot_sweep(df: pd.DataFrame, output_path: str, show: bool = False) -> None:
 
 
 def main():
+    # Get defaults from shared config
+    sweep_defaults = SWEEP_CONFIG["detection_radius"]
+    default_radii = format_speeds_for_cli(sweep_defaults["parameter_values"])
+    default_episodes = sweep_defaults["n_episodes"]
+    
     parser = argparse.ArgumentParser(
         description="Parameter sweep: detection radius vs success rate"
     )
     parser.add_argument(
-        "--n-episodes", type=int, default=200,
-        help="Number of episodes per radius setting (default: 200)"
+        "--n-episodes", type=int, default=default_episodes,
+        help=f"Number of episodes per radius setting (default: {default_episodes})"
     )
     parser.add_argument(
-        "--radii", type=str, default="5,8,10,12,15",
-        help="Comma-separated list of detection radii (default: 5,8,10,12,15)"
+        "--radii", type=str, default=default_radii,
+        help=f"Comma-separated list of detection radii (default: {default_radii})"
     )
     parser.add_argument(
-        "--seed-offset", type=int, default=0,
-        help="Starting seed for reproducibility (default: 0)"
+        "--seed-offset", type=int, default=CONFIG.SEED_OFFSET,
+        help=f"Starting seed for reproducibility (default: {CONFIG.SEED_OFFSET})"
     )
     parser.add_argument(
         "--output-dir", type=str, default=None,
@@ -214,8 +225,8 @@ def main():
     
     args = parser.parse_args()
     
-    # Parse radii
-    radii = [float(r.strip()) for r in args.radii.split(",")]
+    # Parse radii using shared utility
+    radii = parse_speeds_from_cli(args.radii)
     
     # Run sweep
     df = sweep_detection_radius(

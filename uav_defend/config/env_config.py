@@ -58,3 +58,13 @@ class EnvConfig:
     intercept_radius: float = 2.5   # Distance at which defender neutralizes/intercepts the enemy
     threat_radius: float = 2.0      # Enemy reaches soldier and causes mission failure
     unsafe_intercept_radius: float = 3.5  # If intercept occurs this close to soldier, it's a failure
+    
+    # =========================================================================
+    # Kalman Tracking Configuration
+    # - Optional state estimation for enemy position/velocity
+    # - When enabled, noisy measurements are filtered for smoother estimates
+    # =========================================================================
+    use_kalman_tracking: bool = True  # If True, use Kalman filter for enemy state estimation
+    process_var: float = 1.0           # Process noise variance (higher = trust measurements more)
+    measurement_var: float = 0.5       # Measurement noise variance (sensor accuracy)
+    lead_time: float = 0.0             # Prediction lead time for extrapolating enemy position (seconds)

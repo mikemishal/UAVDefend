@@ -29,6 +29,12 @@ from uav_defend.config.env_config import EnvConfig
 from uav_defend.policies.rl import PPOPolicyWrapper
 
 from experiments.eval_utils import evaluate_policy
+from experiments.experiment_config import (
+    CONFIG,
+    SWEEP_CONFIG,
+    format_speeds_for_cli,
+    parse_speeds_from_cli,
+)
 
 
 def sweep_enemy_speed(
@@ -191,6 +197,11 @@ def plot_sweep(df: pd.DataFrame, output_path: str, show: bool = False) -> None:
 
 
 def main():
+    # Get defaults from shared config
+    sweep_defaults = SWEEP_CONFIG["enemy_speed"]
+    default_speeds = format_speeds_for_cli(sweep_defaults["parameter_values"])
+    default_episodes = sweep_defaults["n_episodes"]
+    
     parser = argparse.ArgumentParser(
         description="Parameter sweep: enemy speed vs success rate (PPO)"
     )
@@ -199,16 +210,16 @@ def main():
         help="Path to trained PPO model (.zip file)"
     )
     parser.add_argument(
-        "--n-episodes", type=int, default=200,
-        help="Number of episodes per speed setting (default: 200)"
+        "--n-episodes", type=int, default=default_episodes,
+        help=f"Number of episodes per speed setting (default: {default_episodes})"
     )
     parser.add_argument(
-        "--speeds", type=str, default="8,10,12,14,16",
-        help="Comma-separated list of enemy speeds (default: 8,10,12,14,16)"
+        "--speeds", type=str, default=default_speeds,
+        help=f"Comma-separated list of enemy speeds (default: {default_speeds})"
     )
     parser.add_argument(
-        "--seed-offset", type=int, default=0,
-        help="Starting seed for reproducibility (default: 0)"
+        "--seed-offset", type=int, default=CONFIG.SEED_OFFSET,
+        help=f"Starting seed for reproducibility (default: {CONFIG.SEED_OFFSET})"
     )
     parser.add_argument(
         "--output-dir", type=str, default=None,
@@ -229,8 +240,8 @@ def main():
     
     args = parser.parse_args()
     
-    # Parse speeds
-    speeds = [float(s.strip()) for s in args.speeds.split(",")]
+    # Parse speeds using shared utility
+    speeds = parse_speeds_from_cli(args.speeds)
     
     # Run sweep
     df = sweep_enemy_speed(

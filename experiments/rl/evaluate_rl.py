@@ -43,15 +43,21 @@ from uav_defend.envs import SoldierEnv
 from uav_defend.policies.rl import PPOPolicyWrapper
 
 from experiments.eval_utils import (
+    Trajectory,
     evaluate_policy,
     format_comparison_df,
+    run_episode_with_trajectory,
+    save_trajectories,
+    select_representative_trajectories,
     summarize_results,
 )
+from experiments.experiment_config import CONFIG, EVAL_CONFIG
 
 
 # Default paths
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), '..', '..')
 DEFAULT_OUTPUT = os.path.join(PROJECT_ROOT, 'results', 'rl', 'rl_results.csv')
+DEFAULT_TRAJECTORY_DIR = os.path.join(PROJECT_ROOT, 'results', 'rl', 'trajectories')
 
 
 def compute_confidence_interval(
@@ -234,6 +240,9 @@ def evaluate_rl(
     output_path: str | None = None,
     deterministic: bool = True,
     verbose: bool = True,
+    save_trajectories_flag: bool = False,
+    n_trajectory_episodes: int = 50,
+    trajectory_dir: str | None = None,
 ) -> Tuple[pd.DataFrame, dict]:
     """
     Run Monte Carlo evaluation of a trained PPO model.
@@ -245,6 +254,9 @@ def evaluate_rl(
         output_path: Path to save results CSV.
         deterministic: If True, use deterministic actions (no exploration).
         verbose: Print progress.
+        save_trajectories_flag: If True, save representative trajectories.
+        n_trajectory_episodes: Number of episodes to capture for trajectory selection.
+        trajectory_dir: Directory to save trajectories.
     
     Returns:
         Tuple of (results DataFrame, summary dict).
@@ -265,13 +277,58 @@ def evaluate_rl(
     # Generate seeds
     seeds = list(range(seed_offset, seed_offset + n_episodes))
     
-    # Run evaluation using shared pipeline
-    df_raw, summary, _ = evaluate_policy(
-        env_factory=env_factory,
-        policy=policy,
-        seeds=seeds,
-        verbose=verbose,
-    )
+    # Trajectory collection setup
+    captured_trajectories = []
+    n_to_capture = min(n_trajectory_episodes, n_episodes) if save_trajectories_flag else 0
+    
+    if save_trajectories_flag and verbose:
+        print(f"Trajectory capture: first {n_to_capture} episodes")
+    
+    # Run evaluation - capture trajectories for first N episodes if requested
+    if save_trajectories_flag and n_to_capture > 0:
+        # Run trajectory-capturing episodes first
+        capture_seeds = seeds[:n_to_capture]
+        remaining_seeds = seeds[n_to_capture:]
+        
+        if verbose:
+            print(f"\nCapturing {n_to_capture} trajectories...")
+        
+        df_capture, summary_capture, captured_trajectories = evaluate_policy(
+            env_factory=env_factory,
+            policy=policy,
+            seeds=capture_seeds,
+            verbose=verbose,
+            capture_trajectories=True,
+        )
+        
+        # Run remaining episodes without trajectory capture (faster)
+        if len(remaining_seeds) > 0:
+            if verbose:
+                print(f"\nRunning remaining {len(remaining_seeds)} episodes...")
+            
+            df_remaining, _, _ = evaluate_policy(
+                env_factory=env_factory,
+                policy=policy,
+                seeds=remaining_seeds,
+                verbose=verbose,
+                capture_trajectories=False,
+            )
+            
+            # Combine results
+            df_raw = pd.concat([df_capture, df_remaining], ignore_index=True)
+        else:
+            df_raw = df_capture
+        
+        # Recompute summary on full dataset
+        summary = summarize_results(df_raw)
+    else:
+        # Standard evaluation without trajectory capture
+        df_raw, summary, _ = evaluate_policy(
+            env_factory=env_factory,
+            policy=policy,
+            seeds=seeds,
+            verbose=verbose,
+        )
     
     # Format to comparison schema (same as baseline)
     df = format_comparison_df(df_raw)
@@ -287,10 +344,48 @@ def evaluate_rl(
     df.to_csv(output_path, index=False)
     print(f"\nResults saved to: {output_path}")
     
+    # Save representative trajectories
+    if save_trajectories_flag and captured_trajectories:
+        if trajectory_dir is None:
+            trajectory_dir = DEFAULT_TRAJECTORY_DIR
+        
+        os.makedirs(trajectory_dir, exist_ok=True)
+        
+        # Use captured episodes DataFrame for selection
+        df_for_selection = df_raw.head(n_to_capture)
+        
+        # Select representative trajectories
+        selected = select_representative_trajectories(
+            trajectories=captured_trajectories,
+            results_df=df_for_selection,
+        )
+        
+        if verbose:
+            print(f"\nSaving {len(selected)} representative trajectories:")
+            for category, traj in selected.items():
+                print(f"  - {category}: seed={traj.seed}, outcome={traj.outcome}")
+        
+        # Save trajectories
+        saved_paths = save_trajectories(
+            trajectories=selected,
+            output_dir=trajectory_dir,
+            policy_name="ppo",
+        )
+        
+        if verbose:
+            print(f"\nTrajectories saved to: {trajectory_dir}")
+            for path in saved_paths:
+                print(f"  - {os.path.basename(path)}")
+    
     return df, summary
 
 
 def main():
+    # Get defaults from shared config
+    default_episodes = EVAL_CONFIG["n_episodes"]
+    default_seed = EVAL_CONFIG["seed_offset"]
+    default_traj_episodes = EVAL_CONFIG["trajectory_episodes"]
+    
     parser = argparse.ArgumentParser(
         description="Monte Carlo evaluation of trained RL policies"
     )
@@ -299,12 +394,12 @@ def main():
         help="Path to trained PPO model (.zip file)"
     )
     parser.add_argument(
-        "--n-episodes", type=int, default=1000,
-        help="Number of evaluation episodes (default: 1000)"
+        "--n-episodes", type=int, default=default_episodes,
+        help=f"Number of evaluation episodes (default: {default_episodes})"
     )
     parser.add_argument(
-        "--seed-offset", type=int, default=0,
-        help="Starting seed (default: 0)"
+        "--seed-offset", type=int, default=default_seed,
+        help=f"Starting seed (default: {default_seed})"
     )
     parser.add_argument(
         "--output", type=str, default=None,
@@ -318,6 +413,18 @@ def main():
         "--quiet", action="store_true",
         help="Suppress progress output"
     )
+    parser.add_argument(
+        "--save-trajectories", action="store_true",
+        help="Save representative trajectories for visualization"
+    )
+    parser.add_argument(
+        "--n-trajectory-episodes", type=int, default=default_traj_episodes,
+        help=f"Number of episodes to capture for trajectory selection (default: {default_traj_episodes})"
+    )
+    parser.add_argument(
+        "--trajectory-dir", type=str, default=None,
+        help="Directory to save trajectories (default: results/rl/trajectories/)"
+    )
     
     args = parser.parse_args()
     
@@ -328,6 +435,9 @@ def main():
         output_path=args.output,
         deterministic=not args.stochastic,
         verbose=not args.quiet,
+        save_trajectories_flag=args.save_trajectories,
+        n_trajectory_episodes=args.n_trajectory_episodes,
+        trajectory_dir=args.trajectory_dir,
     )
     
     return df, summary

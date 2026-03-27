@@ -60,7 +60,7 @@ def main():
     seeds = range(args.seed_offset, args.seed_offset + args.n_episodes)
     
     # Run evaluation using shared utilities
-    df, summary = evaluate_policy(
+    df, summary, _ = evaluate_policy(
         env_factory=env_factory,
         policy=policy,
         seeds=seeds,
