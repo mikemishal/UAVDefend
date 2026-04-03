@@ -319,6 +319,13 @@ class SoldierEnv(gym.Env):
         # Move enemy with weaving pursuit toward soldier (uncontrolled)
         self._move_enemy()
         
+        # Update enemy detection state and Kalman tracking estimates.
+        # Called here, in step(), so that it is a first-class environment
+        # behavior available to ANY controller — not tied to RL logic.
+        # Uses the positions after this step's entity movements but before
+        # the defender displacement, matching pre-refactor semantics.
+        self._update_detection()
+        
         # Move defender based on external action (controlled via step())
         self._move_defender(action)
         
@@ -379,10 +386,14 @@ class SoldierEnv(gym.Env):
             # 2. Small time penalty (encourages efficiency)
             reward += self.config.reward_time_penalty
             
-            # 3. Tracking error improvement reward (only after detection)
-            if self._enemy_detected and self._e_hat is not None:
+            # 3. Tracking error improvement reward (only when Kalman is active and
+            #    enemy is detected — meaningless otherwise since e_hat == true pos)
+            if (self.config.use_kalman_tracking
+                    and self._enemy_detected
+                    and self._kf is not None
+                    and self._e_hat is not None):
                 tracking_error = float(np.linalg.norm(self._enemy_pos - self._e_hat))
-                if hasattr(self, '_prev_tracking_error') and self._prev_tracking_error is not None:
+                if self._prev_tracking_error is not None:
                     tracking_improvement = self._prev_tracking_error - tracking_error
                     reward += self.config.reward_tracking_scale * tracking_improvement
                 self._prev_tracking_error = tracking_error
@@ -415,13 +426,11 @@ class SoldierEnv(gym.Env):
                    Defender displacement = v_d * dt * normalized_action.
                    If action norm < eps, defender does not move.
         
-        The defender is controlled entirely by the external policy.
-        Detection and Kalman tracking are handled separately in _update_detection().
+        Note:
+            Detection and Kalman tracking are managed independently by
+            _update_detection(), called from step() before this method.
         """
         eps = self.config.eps
-        
-        # Update detection and Kalman tracking (independent of defender motion)
-        self._update_detection()
         
         # Action-driven defender motion
         action = np.asarray(action, dtype=np.float32)
@@ -444,18 +453,27 @@ class SoldierEnv(gym.Env):
     
     def _update_detection(self) -> None:
         """
-        Update enemy detection state and optionally Kalman filter tracking.
-        
-        Detection occurs when defender is within detection_radius of enemy.
-        Once detected, tracking persists.
-        
-        If use_kalman_tracking=True:
-            - Kalman filter estimates enemy state from noisy measurements
-            - predict() and update() called each step after detection
-        
-        If use_kalman_tracking=False:
-            - e_hat and v_hat use true enemy state (no filtering)
-            - Preserves backward compatibility with existing scripts
+        Update enemy detection state and Kalman tracking estimates.
+
+        Called once per step() BEFORE defender displacement, after all entity
+        positions have been updated. This is a standalone environment behavior:
+        the results are available to any controller through info['e_hat'],
+        info['v_hat'], and info['tracking_error'] — no RL wrapper required.
+
+        Detection occurs when the defender is within detection_radius of the
+        enemy. Once detected, tracking persists for the rest of the episode.
+
+        If use_kalman_tracking=True (recommended for KalmanGreedyInterceptPolicy
+        and PPO RL-Kalman):
+            - EnemyKalmanFilter is initialized on first detection.
+            - predict() + update() called every subsequent step.
+            - e_hat and v_hat carry filtered estimates with proper uncertainty.
+            - tracking_error in info is the Euclidean filter error.
+
+        If use_kalman_tracking=False (GreedyInterceptPolicy, Direct RL PPO):
+            - e_hat is set to the true enemy position (no noise filtering).
+            - v_hat is zeros (velocity not observable without a filter).
+            - tracking_error in info is None (no estimation to measure).
         """
         # Check for detection (only if not already detected)
         if not self._enemy_detected:
@@ -500,10 +518,10 @@ class SoldierEnv(gym.Env):
                     self._e_hat = self._kf.get_position().astype(np.float32)
                 self._v_hat = self._kf.get_velocity().astype(np.float32)
             else:
-                # No Kalman: use true enemy state directly
+                # No Kalman: expose true enemy state directly.
+                # v_hat is not available without a filter; keep as zeros.
                 self._e_hat = self._enemy_pos.copy()
-                # Estimate velocity from position change (simple finite difference)
-                # For simplicity, keep as zeros when not using Kalman
+                self._v_hat = np.zeros(2, dtype=np.float32)
     
     def _move_soldier(self) -> None:
         """
@@ -693,8 +711,10 @@ class SoldierEnv(gym.Env):
         # Check if current state is in unsafe intercept zone
         unsafe_zone = enemy_soldier_dist <= self.config.unsafe_intercept_radius
         
-        # Compute tracking error if Kalman filter is active
-        if self._e_hat is not None:
+        # Compute tracking error only when Kalman filtering is active.
+        # When use_kalman_tracking=False, e_hat == true enemy pos so the
+        # error would always be 0 — meaningless as a diagnostic metric.
+        if self.config.use_kalman_tracking and self._kf is not None and self._e_hat is not None:
             tracking_error = float(np.linalg.norm(self._enemy_pos - self._e_hat))
         else:
             tracking_error = None

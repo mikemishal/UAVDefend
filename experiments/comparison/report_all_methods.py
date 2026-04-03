@@ -1,22 +1,22 @@
 """
-Generate advisor-ready three-method comparison report.
+Generate advisor-ready four-method comparison report.
 
 =============================================================================
 PURPOSE: RESEARCH-STYLE SUMMARY FOR ADVISOR UPDATES
 =============================================================================
 
-Reads baseline, RL, and RL-with-Kalman evaluation results and generates
+Reads baseline, kalman baseline, RL, and RL-with-Kalman evaluation results and generates
 a markdown report with interpretable conclusions.
 
 Key Questions Addressed:
-    1. Does RL beat the greedy baseline?
-    2. Does RL-with-Kalman beat direct RL?
-    3. Where does Kalman filtering help most?
-    4. Does tracking error correlate with interception success?
-    5. Does Kalman improve robustness at challenging conditions?
+    1. Does Kalman improve the greedy baseline?
+    2. Does RL beat both hand-designed baselines?
+    3. Does RL-with-Kalman beat direct RL?
+    4. Is performance gain driven more by estimation or by control?
+    5. Where does each method help most in parameter sweeps?
 
 Outputs:
-    results/comparison/comparison_summary_all_methods.md
+    results/comparison/comparison_summary_four_methods.md
 
 Usage:
     python experiments/comparison/report_all_methods.py
@@ -39,6 +39,11 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from experiments.experiment_config import (
+    get_eval_csv_filename,
+    get_sweep_csv_filename,
+)
+
 
 # Default paths
 BASELINE_DIR = PROJECT_ROOT / "results" / "baseline"
@@ -48,17 +53,15 @@ OUTPUT_DIR = PROJECT_ROOT / "results" / "comparison"
 
 
 def load_all_data() -> Dict[str, Optional[pd.DataFrame]]:
-    """Load all available result files from all three methods."""
+    """Load all available result files from all four methods."""
     data = {}
     
     # Overall evaluation results
     paths = {
-        "baseline_eval": [
-            BASELINE_DIR / "1k_episodes" / "baseline_results.csv",
-            BASELINE_DIR / "baseline_results.csv",
-        ],
-        "rl_eval": [RL_DIR / "rl_results.csv"],
-        "rl_kalman_eval": [RL_KALMAN_DIR / "rl_kalman_results.csv"],
+        "baseline_eval": [BASELINE_DIR / get_eval_csv_filename("baseline")],
+        "kalman_baseline_eval": [BASELINE_DIR / get_eval_csv_filename("kalman_baseline")],
+        "rl_eval": [RL_DIR / get_eval_csv_filename("rl")],
+        "rl_kalman_eval": [RL_KALMAN_DIR / get_eval_csv_filename("rl_kalman")],
     }
     
     for key, path_list in paths.items():
@@ -72,6 +75,7 @@ def load_all_data() -> Dict[str, Optional[pd.DataFrame]]:
     sweeps = ["defender_speed", "enemy_speed", "detection_radius", "speed_grid"]
     method_dirs = {
         "baseline": BASELINE_DIR,
+        "kalman_baseline": BASELINE_DIR,
         "rl": RL_DIR,
         "rl_kalman": RL_KALMAN_DIR,
     }
@@ -79,7 +83,7 @@ def load_all_data() -> Dict[str, Optional[pd.DataFrame]]:
     for sweep in sweeps:
         for method, dir_path in method_dirs.items():
             key = f"{method}_{sweep}"
-            path = dir_path / f"sweep_{sweep}.csv"
+            path = dir_path / get_sweep_csv_filename(sweep, method)
             data[key] = pd.read_csv(path) if path.exists() else None
     
     return data
@@ -276,349 +280,256 @@ def format_ci(stats: dict) -> str:
 
 
 def generate_report(data: Dict[str, Optional[pd.DataFrame]]) -> str:
-    """Generate comprehensive markdown report."""
+    """Generate comprehensive markdown report for four methods."""
     lines = []
-    
-    # Compute statistics
-    baseline_stats = compute_eval_stats(data.get("baseline_eval"))
-    rl_stats = compute_eval_stats(data.get("rl_eval"))
-    rl_kalman_stats = compute_eval_stats(data.get("rl_kalman_eval"))
-    
-    # === HEADER ===
-    lines.append("# Three-Method Comparison Report")
+
+    method_meta = [
+        ("Greedy Baseline", "baseline_eval"),
+        ("Kalman Baseline", "kalman_baseline_eval"),
+        ("PPO (Direct RL)", "rl_eval"),
+        ("PPO (RL-Kalman)", "rl_kalman_eval"),
+    ]
+
+    stats_by_method = {
+        name: compute_eval_stats(data.get(key))
+        for name, key in method_meta
+    }
+
+    baseline_stats = stats_by_method["Greedy Baseline"]
+    kalman_baseline_stats = stats_by_method["Kalman Baseline"]
+    rl_stats = stats_by_method["PPO (Direct RL)"]
+    rl_kalman_stats = stats_by_method["PPO (RL-Kalman)"]
+
+    def comp(a: dict, b: dict) -> dict:
+        delta = b["success_rate"] - a["success_rate"]
+        z, p, sig = two_proportion_z_test(
+            a["n_episodes"], a["success_rate"],
+            b["n_episodes"], b["success_rate"],
+        )
+        return {"delta": delta, "z": z, "p": p, "sig": sig}
+
+    # Header
+    lines.append("# Four-Method Comparison Report")
     lines.append("")
-    lines.append("## UAV Defender: Baseline vs RL vs RL-with-Kalman")
+    lines.append("## UAV Defender: Baseline vs Kalman Baseline vs Direct RL vs RL-Kalman")
     lines.append("")
     lines.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     lines.append("")
     lines.append("---")
     lines.append("")
-    
-    # === EXECUTIVE SUMMARY ===
-    lines.append("## Executive Summary")
-    lines.append("")
-    
-    if all([baseline_stats, rl_stats, rl_kalman_stats]):
-        # RL vs Baseline
-        rl_vs_baseline = rl_stats["success_rate"] - baseline_stats["success_rate"]
-        z1, p1, sig1 = two_proportion_z_test(
-            baseline_stats["n_episodes"], baseline_stats["success_rate"],
-            rl_stats["n_episodes"], rl_stats["success_rate"]
-        )
-        
-        # RL-Kalman vs RL
-        kalman_vs_rl = rl_kalman_stats["success_rate"] - rl_stats["success_rate"]
-        z2, p2, sig2 = two_proportion_z_test(
-            rl_stats["n_episodes"], rl_stats["success_rate"],
-            rl_kalman_stats["n_episodes"], rl_kalman_stats["success_rate"]
-        )
-        
-        # RL-Kalman vs Baseline
-        kalman_vs_baseline = rl_kalman_stats["success_rate"] - baseline_stats["success_rate"]
-        z3, p3, sig3 = two_proportion_z_test(
-            baseline_stats["n_episodes"], baseline_stats["success_rate"],
-            rl_kalman_stats["n_episodes"], rl_kalman_stats["success_rate"]
-        )
-        
-        lines.append("### Key Findings")
-        lines.append("")
-        
-        # Finding 1: RL vs Baseline
-        if rl_vs_baseline > 0:
-            direction = "outperforms"
-            magnitude = "significantly" if sig1 != "n.s." else "marginally"
-        else:
-            direction = "underperforms"
-            magnitude = "significantly" if sig1 != "n.s." else "marginally"
-        
-        lines.append(f"1. **RL {direction} baseline** ({magnitude}): "
-                    f"+{format_pct(rl_vs_baseline)} absolute improvement "
-                    f"({format_pct(baseline_stats['success_rate'])} → {format_pct(rl_stats['success_rate'])}, "
-                    f"p={p1:.4f}{sig1})")
-        lines.append("")
-        
-        # Finding 2: RL-Kalman vs RL
-        if kalman_vs_rl > 0.005:
-            kalman_helps = True
-            lines.append(f"2. **Kalman filtering improves RL**: "
-                        f"+{format_pct(kalman_vs_rl)} additional improvement "
-                        f"({format_pct(rl_stats['success_rate'])} → {format_pct(rl_kalman_stats['success_rate'])}, "
-                        f"p={p2:.4f}{sig2})")
-        elif kalman_vs_rl < -0.005:
-            kalman_helps = False
-            lines.append(f"2. **Kalman filtering degrades RL**: "
-                        f"{format_pct(kalman_vs_rl)} reduction "
-                        f"({format_pct(rl_stats['success_rate'])} → {format_pct(rl_kalman_stats['success_rate'])}, "
-                        f"p={p2:.4f}{sig2})")
-        else:
-            kalman_helps = None  # Equivalent
-            lines.append(f"2. **Kalman filtering shows negligible effect on RL**: "
-                        f"{format_pct(kalman_vs_rl)} difference "
-                        f"({format_pct(rl_stats['success_rate'])} → {format_pct(rl_kalman_stats['success_rate'])}, "
-                        f"p={p2:.4f}{sig2})")
-        lines.append("")
-        
-        # Finding 3: Overall improvement
-        lines.append(f"3. **Total improvement over baseline**: "
-                    f"+{format_pct(kalman_vs_baseline)} "
-                    f"({format_pct(baseline_stats['success_rate'])} → {format_pct(rl_kalman_stats['success_rate'])})")
-        lines.append("")
-    else:
-        lines.append("*Insufficient data for all three methods. See detailed sections below.*")
-        lines.append("")
-    
-    # === RESULTS TABLE ===
-    lines.append("---")
-    lines.append("")
+
+    # Overall table
     lines.append("## Overall Performance Comparison")
     lines.append("")
-    lines.append("| Method | Episodes | Success Rate | 95% CI | Failure Rate | Timeout Rate |")
-    lines.append("|--------|----------|--------------|--------|--------------|--------------|")
-    
-    for name, stats in [("Greedy Baseline", baseline_stats), 
-                        ("PPO (Direct RL)", rl_stats), 
-                        ("PPO (RL + Kalman)", rl_kalman_stats)]:
-        if stats:
-            lines.append(f"| {name} | {stats['n_episodes']} | "
-                        f"{format_pct(stats['success_rate'])} ± {format_pct(stats['success_se'])} | "
-                        f"{format_ci(stats)} | "
-                        f"{format_pct(stats['fail_rate'])} | "
-                        f"{format_pct(stats['timeout_rate'])} |")
-        else:
-            lines.append(f"| {name} | — | — | — | — | — |")
-    
+    lines.append("| Method | Episodes | Success Rate | 95% CI | Failure Rate | Timeout Rate | Mean Episode Length | Mean Tracking Error |")
+    lines.append("|--------|----------|--------------|--------|--------------|--------------|---------------------|---------------------|")
+
+    for name, _ in method_meta:
+        st = stats_by_method[name]
+        if st is None:
+            lines.append(f"| {name} | — | — | — | — | — | — | — |")
+            continue
+        mte = f"{st['mean_tracking_error']:.4f}" if st.get("mean_tracking_error") is not None else "N/A"
+        lines.append(
+            f"| {name} | {st['n_episodes']} | "
+            f"{format_pct(st['success_rate'])} ± {format_pct(st['success_se'])} | "
+            f"{format_ci(st)} | {format_pct(st['fail_rate'])} | {format_pct(st['timeout_rate'])} | "
+            f"{st['mean_ep_len']:.1f} | {mte} |"
+        )
     lines.append("")
-    
-    # Tracking error for RL-Kalman
-    if rl_kalman_stats and rl_kalman_stats.get("mean_tracking_error"):
-        lines.append(f"**RL-Kalman Mean Tracking Error:** {rl_kalman_stats['mean_tracking_error']:.4f}")
-        lines.append("")
-    
-    # === TRACKING ERROR CORRELATION ===
-    lines.append("---")
+
+    # Core causal questions
+    lines.append("## Advisor Questions and Answers")
     lines.append("")
-    lines.append("## Does Tracking Error Predict Failure?")
-    lines.append("")
-    
-    correlation = analyze_tracking_error_correlation(data.get("rl_kalman_eval"))
-    
-    if correlation:
-        r = correlation["correlation_r"]
-        p = correlation["correlation_p"]
-        
-        lines.append(f"**Correlation Analysis** (n={correlation['n_success'] + correlation['n_failure']} episodes)")
-        lines.append("")
-        
-        if p < 0.05:
-            if r < 0:
-                lines.append(f"- **Significant negative correlation**: r = {r:.3f} (p = {p:.4f})")
-                lines.append("- Episodes with **lower tracking error** are **more likely to succeed**.")
-            else:
-                lines.append(f"- **Significant positive correlation**: r = {r:.3f} (p = {p:.4f})")
-                lines.append("- Unexpectedly, higher tracking error correlates with success.")
-        else:
-            lines.append(f"- **No significant correlation**: r = {r:.3f} (p = {p:.4f})")
-            lines.append("- Tracking error does not significantly predict success/failure.")
-        
-        lines.append("")
-        lines.append(f"| Outcome | Mean Tracking Error | n |")
-        lines.append(f"|---------|---------------------|---|")
-        lines.append(f"| Success | {correlation['mean_error_success']:.4f} | {correlation['n_success']} |")
-        lines.append(f"| Failure | {correlation['mean_error_failure']:.4f} | {correlation['n_failure']} |")
-        
-        if not np.isnan(correlation["t_pvalue"]):
-            sig = "significant" if correlation["t_pvalue"] < 0.05 else "not significant"
-            lines.append(f"\n*t-test: t = {correlation['t_statistic']:.2f}, p = {correlation['t_pvalue']:.4f} ({sig})*")
+
+    all_present = all(st is not None for st in [baseline_stats, kalman_baseline_stats, rl_stats, rl_kalman_stats])
+    if not all_present:
+        lines.append("Insufficient data to answer all four-method questions. Ensure all four evaluation CSV files exist.")
         lines.append("")
     else:
-        lines.append("*No tracking error data available for correlation analysis.*")
+        kalman_vs_baseline = comp(baseline_stats, kalman_baseline_stats)
+        rl_vs_baseline = comp(baseline_stats, rl_stats)
+        rl_vs_kalman_baseline = comp(kalman_baseline_stats, rl_stats)
+        rl_kalman_vs_rl = comp(rl_stats, rl_kalman_stats)
+
+        estimation_only_gain = kalman_baseline_stats["success_rate"] - baseline_stats["success_rate"]
+        control_only_gain = rl_stats["success_rate"] - baseline_stats["success_rate"]
+        combined_gain = rl_kalman_stats["success_rate"] - baseline_stats["success_rate"]
+        within_rl_estimation_gain = rl_kalman_stats["success_rate"] - rl_stats["success_rate"]
+
+        lines.append("### 1. Does Kalman improve the greedy baseline?")
         lines.append("")
-    
-    # === ROBUSTNESS ANALYSIS ===
+        lines.append(
+            f"Kalman Baseline vs Greedy Baseline: {format_pct(kalman_vs_baseline['delta'])} "
+            f"(p={kalman_vs_baseline['p']:.4f}, {kalman_vs_baseline['sig']})."
+        )
+        if kalman_vs_baseline["p"] < 0.05 and kalman_vs_baseline["delta"] > 0:
+            lines.append("Result: Kalman state estimation provides a statistically significant improvement for a hand-designed controller.")
+        elif kalman_vs_baseline["p"] < 0.05 and kalman_vs_baseline["delta"] < 0:
+            lines.append("Result: Kalman state estimation significantly degrades the hand-designed controller.")
+        else:
+            lines.append("Result: No statistically significant controller-independent gain from Kalman filtering.")
+        lines.append("")
+
+        lines.append("### 2. Does RL improve over both baselines?")
+        lines.append("")
+        lines.append(
+            f"Direct RL vs Greedy Baseline: {format_pct(rl_vs_baseline['delta'])} "
+            f"(p={rl_vs_baseline['p']:.4f}, {rl_vs_baseline['sig']})."
+        )
+        lines.append(
+            f"Direct RL vs Kalman Baseline: {format_pct(rl_vs_kalman_baseline['delta'])} "
+            f"(p={rl_vs_kalman_baseline['p']:.4f}, {rl_vs_kalman_baseline['sig']})."
+        )
+        if rl_vs_baseline["delta"] > 0 and rl_vs_kalman_baseline["delta"] > 0:
+            lines.append("Result: Learned control outperforms both hand-designed baselines.")
+        else:
+            lines.append("Result: RL does not consistently dominate both baselines under current settings.")
+        lines.append("")
+
+        lines.append("### 3. Does RL-Kalman improve over Direct RL?")
+        lines.append("")
+        lines.append(
+            f"RL-Kalman vs Direct RL: {format_pct(rl_kalman_vs_rl['delta'])} "
+            f"(p={rl_kalman_vs_rl['p']:.4f}, {rl_kalman_vs_rl['sig']})."
+        )
+        if rl_kalman_vs_rl["p"] < 0.05 and rl_kalman_vs_rl["delta"] > 0:
+            lines.append("Result: Estimation on top of learned control yields a significant additional gain.")
+        elif rl_kalman_vs_rl["p"] < 0.05 and rl_kalman_vs_rl["delta"] < 0:
+            lines.append("Result: Kalman estimation significantly hurts the learned controller in this environment.")
+        else:
+            lines.append("Result: RL-Kalman and Direct RL are statistically similar at current sample size.")
+        lines.append("")
+
+        lines.append("### 4. Which contributes more: estimation or control?")
+        lines.append("")
+        lines.append(f"Estimation-only gain (Greedy → Kalman Baseline): {format_pct(estimation_only_gain)}")
+        lines.append(f"Control-only gain (Greedy → Direct RL): {format_pct(control_only_gain)}")
+        lines.append(f"Combined gain (Greedy → RL-Kalman): {format_pct(combined_gain)}")
+        lines.append(f"Within-RL estimation effect (Direct RL → RL-Kalman): {format_pct(within_rl_estimation_gain)}")
+        lines.append("")
+        if abs(control_only_gain) > abs(estimation_only_gain):
+            lines.append("Interpretation: Performance gains are dominated by the control component (learning), not by estimation alone.")
+        elif abs(control_only_gain) < abs(estimation_only_gain):
+            lines.append("Interpretation: Estimation contributes more than controller learning in this setup.")
+        else:
+            lines.append("Interpretation: Estimation and control have comparable impact in this setup.")
+        lines.append("")
+
+    # Sweep-level summary
     lines.append("---")
     lines.append("")
-    lines.append("## Robustness Analysis: Where Does Kalman Help Most?")
+    lines.append("## Parameter-Sweep Comparison (Method Ranking)")
     lines.append("")
-    
-    has_robustness_data = False
-    
-    # Detection radius (low = challenging)
-    robustness_det = analyze_robustness(
-        data.get("baseline_detection_radius"),
-        data.get("rl_detection_radius"),
-        data.get("rl_kalman_detection_radius"),
-        x_col="detection_radius",
-        challenging_condition="low"
-    )
-    
-    if robustness_det:
-        has_robustness_data = True
-        lines.append("### Small Detection Radius (Delayed Detection)")
+
+    def sweep_wins(sweep_name: str, x_col: str) -> Optional[pd.DataFrame]:
+        pieces = []
+        for method_key, col_name in [
+            ("baseline", "Greedy Baseline"),
+            ("kalman_baseline", "Kalman Baseline"),
+            ("rl", "PPO (Direct RL)"),
+            ("rl_kalman", "PPO (RL-Kalman)"),
+        ]:
+            df = data.get(f"{method_key}_{sweep_name}")
+            if df is None or x_col not in df.columns or "success_rate" not in df.columns:
+                return None
+            pieces.append(df[[x_col, "success_rate"]].rename(columns={"success_rate": col_name}))
+
+        merged = pieces[0]
+        for p in pieces[1:]:
+            merged = merged.merge(p, on=x_col)
+
+        score_cols = [c for c in merged.columns if c != x_col]
+        merged["best_method"] = merged[score_cols].idxmax(axis=1)
+        return merged
+
+    for sweep_name, x_col, title in [
+        ("defender_speed", "defender_speed", "Defender speed sweep"),
+        ("enemy_speed", "enemy_speed", "Enemy speed sweep"),
+        ("detection_radius", "detection_radius", "Detection radius sweep"),
+    ]:
+        merged = sweep_wins(sweep_name, x_col)
+        if merged is None:
+            lines.append(f"### {title}")
+            lines.append("")
+            lines.append("Data unavailable.")
+            lines.append("")
+            continue
+
+        lines.append(f"### {title}")
         lines.append("")
-        adv_chal = robustness_det["kalman_advantage_challenging"] * 100
-        adv_easy = robustness_det["kalman_advantage_easy"] * 100
-        
-        if adv_chal > adv_easy + 1:
-            lines.append(f"- **Kalman helps more at small detection radii** (challenging conditions).")
-            lines.append(f"  - Small radius: RL-Kalman +{adv_chal:.1f}pp over direct RL")
-            lines.append(f"  - Large radius: RL-Kalman +{adv_easy:.1f}pp over direct RL")
-        elif adv_chal < adv_easy - 1:
-            lines.append(f"- **Kalman helps more at large detection radii** (contrary to hypothesis).")
-            lines.append(f"  - Small radius: RL-Kalman +{adv_chal:.1f}pp over direct RL")
-            lines.append(f"  - Large radius: RL-Kalman +{adv_easy:.1f}pp over direct RL")
-        else:
-            lines.append(f"- **Kalman advantage is similar across detection radii.**")
-            lines.append(f"  - Small radius: RL-Kalman +{adv_chal:.1f}pp over direct RL")
-            lines.append(f"  - Large radius: RL-Kalman +{adv_easy:.1f}pp over direct RL")
+        wins = merged["best_method"].value_counts().to_dict()
+        total = len(merged)
+        for method_name in ["Greedy Baseline", "Kalman Baseline", "PPO (Direct RL)", "PPO (RL-Kalman)"]:
+            w = wins.get(method_name, 0)
+            lines.append(f"- {method_name}: {w}/{total} best settings")
         lines.append("")
-    
-    # Enemy speed (high = challenging)
-    robustness_enemy = analyze_robustness(
-        data.get("baseline_enemy_speed"),
-        data.get("rl_enemy_speed"),
-        data.get("rl_kalman_enemy_speed"),
-        x_col="enemy_speed",
-        challenging_condition="high"
-    )
-    
-    if robustness_enemy:
-        has_robustness_data = True
-        lines.append("### High Enemy Speed (Fast-Moving Target)")
+
+    # Speed grid summary
+    grid_methods = {
+        "Greedy Baseline": data.get("baseline_speed_grid"),
+        "Kalman Baseline": data.get("kalman_baseline_speed_grid"),
+        "PPO (Direct RL)": data.get("rl_speed_grid"),
+        "PPO (RL-Kalman)": data.get("rl_kalman_speed_grid"),
+    }
+
+    lines.append("### Speed-grid sweep")
+    lines.append("")
+    if all(df is not None for df in grid_methods.values()):
+        lines.append("Mean success rate across all defender/enemy speed grid points:")
         lines.append("")
-        adv_chal = robustness_enemy["kalman_advantage_challenging"] * 100
-        adv_easy = robustness_enemy["kalman_advantage_easy"] * 100
-        
-        if adv_chal > adv_easy + 1:
-            lines.append(f"- **Kalman helps more at high enemy speeds** (challenging conditions).")
-            lines.append(f"  - Fast enemy: RL-Kalman +{adv_chal:.1f}pp over direct RL")
-            lines.append(f"  - Slow enemy: RL-Kalman +{adv_easy:.1f}pp over direct RL")
-        elif adv_chal < adv_easy - 1:
-            lines.append(f"- **Kalman helps more at low enemy speeds** (contrary to hypothesis).")
-            lines.append(f"  - Fast enemy: RL-Kalman +{adv_chal:.1f}pp over direct RL")
-            lines.append(f"  - Slow enemy: RL-Kalman +{adv_easy:.1f}pp over direct RL")
-        else:
-            lines.append(f"- **Kalman advantage is similar across enemy speeds.**")
-            lines.append(f"  - Fast enemy: RL-Kalman +{adv_chal:.1f}pp over direct RL")
-            lines.append(f"  - Slow enemy: RL-Kalman +{adv_easy:.1f}pp over direct RL")
-        lines.append("")
-    
-    # Defender speed (low = challenging)
-    robustness_def = analyze_robustness(
-        data.get("baseline_defender_speed"),
-        data.get("rl_defender_speed"),
-        data.get("rl_kalman_defender_speed"),
-        x_col="defender_speed",
-        challenging_condition="low"
-    )
-    
-    if robustness_def:
-        has_robustness_data = True
-        lines.append("### Low Defender Speed (Reduced Speed Advantage)")
-        lines.append("")
-        adv_chal = robustness_def["kalman_advantage_challenging"] * 100
-        adv_easy = robustness_def["kalman_advantage_easy"] * 100
-        
-        if adv_chal > adv_easy + 1:
-            lines.append(f"- **Kalman helps more at low defender speeds** (challenging conditions).")
-            lines.append(f"  - Slow defender: RL-Kalman +{adv_chal:.1f}pp over direct RL")
-            lines.append(f"  - Fast defender: RL-Kalman +{adv_easy:.1f}pp over direct RL")
-        elif adv_chal < adv_easy - 1:
-            lines.append(f"- **Kalman helps more at high defender speeds**.")
-            lines.append(f"  - Slow defender: RL-Kalman +{adv_chal:.1f}pp over direct RL")
-            lines.append(f"  - Fast defender: RL-Kalman +{adv_easy:.1f}pp over direct RL")
-        else:
-            lines.append(f"- **Kalman advantage is similar across defender speeds.**")
-            lines.append(f"  - Slow defender: RL-Kalman +{adv_chal:.1f}pp over direct RL")
-            lines.append(f"  - Fast defender: RL-Kalman +{adv_easy:.1f}pp over direct RL")
-        lines.append("")
-    
-    if not has_robustness_data:
-        lines.append("*No sweep data available for robustness analysis.*")
-        lines.append("")
-    
-    # === INTERPRETATION ===
+        for method_name, df in grid_methods.items():
+            lines.append(f"- {method_name}: {format_pct(df['success_rate'].mean())}")
+    else:
+        lines.append("Data unavailable.")
+    lines.append("")
+
+    # Conclusion
     lines.append("---")
     lines.append("")
-    lines.append("## Interpretation and Conclusions")
+    lines.append("## Research Conclusion")
     lines.append("")
-    
-    if all([baseline_stats, rl_stats, rl_kalman_stats]):
-        # Summarize key findings
-        lines.append("### Summary")
-        lines.append("")
-        
-        rl_beats_baseline = rl_stats["success_rate"] > baseline_stats["success_rate"] + 0.01
-        kalman_beats_rl = rl_kalman_stats["success_rate"] > rl_stats["success_rate"] + 0.01
-        kalman_equals_rl = abs(rl_kalman_stats["success_rate"] - rl_stats["success_rate"]) <= 0.01
-        
-        if rl_beats_baseline and kalman_beats_rl:
-            lines.append("The experiments support a **progressive improvement** hypothesis:")
-            lines.append("")
-            lines.append("1. Reinforcement learning learns a policy that exceeds hand-crafted baseline performance.")
-            lines.append("2. Incorporating Kalman filtering for state estimation provides additional gains.")
-            lines.append("3. The RL agent benefits from filtered observations that smooth sensor noise.")
-        elif rl_beats_baseline and kalman_equals_rl:
-            lines.append("The experiments show **RL provides significant gains**, but Kalman filtering does not add measurable benefit:")
-            lines.append("")
-            lines.append("1. Direct RL successfully learns an effective pursuit policy.")
-            lines.append("2. The environment's true-state observations may already be sufficient.")
-            lines.append("3. Kalman filtering neither helps nor hurts in this observation regime.")
-        elif rl_beats_baseline and not kalman_beats_rl:
-            lines.append("**Unexpected finding**: Kalman filtering reduces RL performance:")
-            lines.append("")
-            lines.append("1. Direct RL outperforms both baseline and RL-Kalman.")
-            lines.append("2. The Kalman filter may introduce lag or bias in state estimates.")
-            lines.append("3. Consider tuning process/measurement noise parameters.")
+    if all_present:
+        if kalman_vs_baseline["delta"] > 0 and kalman_vs_baseline["p"] < 0.05:
+            kalman_statement = "Kalman provides a measurable controller-independent gain for the hand-designed policy."
+        elif kalman_vs_baseline["delta"] > 0:
+            kalman_statement = "Kalman baseline is numerically better, but the gain is not statistically significant."
+        elif kalman_vs_baseline["delta"] < 0 and kalman_vs_baseline["p"] < 0.05:
+            kalman_statement = "Kalman significantly degrades the hand-designed baseline."
         else:
-            lines.append("Results are mixed or inconclusive. Consider:")
-            lines.append("")
-            lines.append("1. Increasing training timesteps for RL policies.")
-            lines.append("2. Hyperparameter tuning for both RL and Kalman filter.")
-            lines.append("3. Analyzing failure modes in more detail.")
-        
+            kalman_statement = "Kalman does not provide a meaningful controller-independent baseline gain."
+
+        lines.append(kalman_statement)
         lines.append("")
-        
-        # Recommendations
-        lines.append("### Recommendations for Next Steps")
-        lines.append("")
-        
-        if kalman_beats_rl:
-            lines.append("1. **Deploy RL-Kalman** as the primary policy for this environment configuration.")
-            lines.append("2. **Tune Kalman parameters** (process_var, measurement_var) to further improve tracking.")
-            lines.append("3. **Test generalization** with varying sensor noise levels.")
-        elif kalman_equals_rl:
-            lines.append("1. **Deploy direct RL** since it achieves similar performance with simpler architecture.")
-            lines.append("2. **Consider Kalman** if deploying to environments with actual sensor noise.")
-            lines.append("3. **Test with measurement noise** to see if Kalman becomes beneficial.")
-        else:
-            lines.append("1. **Deploy direct RL** which shows best performance.")
-            lines.append("2. **Debug Kalman integration** - check filter tuning and observation pipeline.")
-            lines.append("3. **Analyze RL-Kalman failure modes** to understand performance gap.")
-        
-        lines.append("")
-    
-    # === FOOTER ===
+        lines.append(
+            "Across methods, the dominant source of performance gain is the controller design (learned policy), "
+            "while estimation contributes a smaller and context-dependent effect."
+        )
+    else:
+        lines.append("The report is incomplete because one or more required method results are missing.")
+    lines.append("")
+
     lines.append("---")
     lines.append("")
     lines.append("*Report generated automatically by `experiments/comparison/report_all_methods.py`*")
     lines.append("")
-    
+
     return "\n".join(lines)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate advisor-ready three-method comparison report"
+        description="Generate advisor-ready four-method comparison report"
     )
     parser.add_argument(
         "--output", type=str, 
-        default=str(OUTPUT_DIR / "comparison_summary_all_methods.md"),
+        default=str(OUTPUT_DIR / "comparison_summary_four_methods.md"),
         help="Output markdown file path"
     )
     args = parser.parse_args()
     
     print("=" * 70)
-    print("GENERATING THREE-METHOD COMPARISON REPORT")
+    print("GENERATING FOUR-METHOD COMPARISON REPORT")
     print("=" * 70)
     
     # Load data

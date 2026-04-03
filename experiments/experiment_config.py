@@ -1,17 +1,18 @@
 """
 Shared Experiment Configuration.
 
-This module centralizes all experiment parameters to ensure baseline, RL,
-and RL-with-Kalman evaluations use identical settings. Any changes here
-automatically apply to all three pipelines.
+This module centralizes all experiment parameters to ensure baseline,
+kalman-baseline, RL, and RL-with-Kalman evaluations use identical settings.
+Any changes here automatically apply to all synchronized experiment pipelines.
 
 =============================================================================
 SYNCHRONIZED EXPERIMENT TRACKS
 =============================================================================
 
     1. Baseline (greedy pursuit)
-    2. Direct RL (PPO with true observations)
-    3. RL-with-Kalman (PPO with Kalman-filtered observations)
+    2. Kalman Baseline (greedy pursuit on Kalman estimates)
+    3. Direct RL (PPO with true observations)
+    4. RL-with-Kalman (PPO with Kalman-filtered observations)
 
 All tracks share:
     - Parameter sweep ranges
@@ -58,7 +59,8 @@ class ExperimentConfig:
     Centralized experiment configuration.
     
     All parameter ranges, episode counts, and evaluation settings are
-    defined here to prevent drift between baseline and RL experiments.
+    defined here to prevent drift between the four synchronized experiment
+    tracks: baseline, kalman baseline, direct RL, and RL-Kalman.
     """
     
     # =========================================================================
@@ -108,8 +110,9 @@ class ExperimentConfig:
     PLOT_FIGSIZE: tuple[float, float] = (10, 6)
     GRID_FIGSIZE: tuple[float, float] = (12, 5)
     
-    # Colors for baseline vs RL comparison
+    # Colors for four-track comparison
     BASELINE_COLOR: str = "#2E86AB"  # Blue
+    KALMAN_BASELINE_COLOR: str = "#F39C12"  # Orange
     RL_COLOR: str = "#9B59B6"        # Purple
     RL_KALMAN_COLOR: str = "#E74C3C" # Red
     
@@ -201,6 +204,7 @@ EVAL_CONFIG: dict[str, Any] = {
     "seed_offset": CONFIG.SEED_OFFSET,
     "trajectory_episodes": CONFIG.TRAJECTORY_EPISODES,
     "baseline_csv": "baseline_results.csv",
+    "kalman_baseline_csv": "kalman_baseline_results.csv",
     "rl_csv": "rl_results.csv",
     "rl_kalman_csv": "rl_kalman_results.csv",
 }
@@ -235,6 +239,14 @@ METHOD_STYLES: dict[str, dict[str, Any]] = {
         "linestyle": "-",
         "output_dir": "results/baseline",
     },
+    "kalman_baseline": {
+        "name": "Kalman Baseline",
+        "short_name": "Kalman-Baseline",
+        "color": CONFIG.KALMAN_BASELINE_COLOR,
+        "marker": "D",
+        "linestyle": "-",
+        "output_dir": "results/baseline",
+    },
     "rl": {
         "name": "PPO (Direct RL)",
         "short_name": "RL",
@@ -260,10 +272,18 @@ METHOD_STYLES: dict[str, dict[str, Any]] = {
 
 OUTPUT_DIRS: dict[str, str] = {
     "baseline": "results/baseline",
+    "kalman_baseline": "results/baseline",
     "rl": "results/rl",
     "rl_kalman": "results/rl_kalman",
     "comparison": "results/comparison",
 }
+
+METHOD_KEYS: tuple[str, ...] = (
+    "baseline",
+    "kalman_baseline",
+    "rl",
+    "rl_kalman",
+)
 
 
 # =========================================================================
@@ -310,7 +330,7 @@ def get_method_style(method: str) -> dict[str, Any]:
     Get styling configuration for a method.
     
     Args:
-        method: One of "baseline", "rl", "rl_kalman"
+        method: One of "baseline", "kalman_baseline", "rl", "rl_kalman"
     
     Returns:
         Dictionary with name, color, marker, linestyle, output_dir.
@@ -339,16 +359,74 @@ def get_output_dir(method: str) -> str:
     return OUTPUT_DIRS[method]
 
 
+def get_eval_csv_filename(method: str) -> str:
+    """Get the standard evaluation CSV filename for a method."""
+    mapping = {
+        "baseline": EVAL_CONFIG["baseline_csv"],
+        "kalman_baseline": EVAL_CONFIG["kalman_baseline_csv"],
+        "rl": EVAL_CONFIG["rl_csv"],
+        "rl_kalman": EVAL_CONFIG["rl_kalman_csv"],
+    }
+    if method not in mapping:
+        raise ValueError(f"Unknown method: {method}. Available: {list(mapping.keys())}")
+    return mapping[method]
+
+
+def get_sweep_csv_filename(sweep_name: str, method: str) -> str:
+    """
+    Get the standard sweep CSV filename for a method.
+
+    Kalman baseline keeps the same sweep names as the other tracks with an
+    added `_kalman_baseline` suffix to avoid collisions inside results/baseline.
+    """
+    if sweep_name not in SWEEP_CONFIG:
+        raise ValueError(f"Unknown sweep: {sweep_name}. Available: {list(SWEEP_CONFIG.keys())}")
+
+    base_name = SWEEP_CONFIG[sweep_name]["csv_filename"]
+    if method == "kalman_baseline":
+        stem, ext = base_name.rsplit(".", 1)
+        return f"{stem}_kalman_baseline.{ext}"
+    if method not in METHOD_KEYS:
+        raise ValueError(f"Unknown method: {method}. Available: {list(METHOD_KEYS)}")
+    return base_name
+
+
+def get_sweep_plot_filename(sweep_name: str, method: str, variant: str | None = None) -> str:
+    """
+    Get the standard sweep plot filename for a method.
+
+    Args:
+        sweep_name: Sweep key from SWEEP_CONFIG.
+        method: Method key.
+        variant: Optional suffix such as "heatmap" or "contour".
+    """
+    if sweep_name not in SWEEP_CONFIG:
+        raise ValueError(f"Unknown sweep: {sweep_name}. Available: {list(SWEEP_CONFIG.keys())}")
+
+    base_name = SWEEP_CONFIG[sweep_name]["plot_filename"]
+    stem, ext = base_name.rsplit(".", 1)
+
+    if method == "kalman_baseline":
+        stem = f"{stem}_kalman_baseline"
+    elif method not in METHOD_KEYS:
+        raise ValueError(f"Unknown method: {method}. Available: {list(METHOD_KEYS)}")
+
+    if variant:
+        stem = f"{stem}_{variant}"
+    return f"{stem}.{ext}"
+
+
 # =========================================================================
 # VERSION INFO
 # =========================================================================
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __doc_version__ = """
-Experiment Configuration v2.0.0 (Three-Method Synchronization)
+Experiment Configuration v2.1.0 (Four-Method Synchronization)
 
 Methods Supported:
   - Greedy Baseline (direct pursuit)
+    - Kalman Baseline (greedy pursuit on Kalman estimates)
   - PPO Direct RL (raw observations)
   - PPO RL-Kalman (Kalman-filtered observations)
 

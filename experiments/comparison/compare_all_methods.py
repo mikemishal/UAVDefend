@@ -1,17 +1,18 @@
 """
-Three-Way Comparison: Baseline vs RL vs RL-with-Kalman.
+Four-Way Comparison: Baseline vs Kalman Baseline vs RL vs RL-with-Kalman.
 
 =============================================================================
-PURPOSE: COMPREHENSIVE COMPARISON OF ALL THREE METHODS
+PURPOSE: COMPREHENSIVE COMPARISON OF ALL FOUR METHODS
 =============================================================================
 
-Loads evaluation results from all three methods and generates side-by-side
+Loads evaluation results from all four methods and generates side-by-side
 comparison plots and summary tables.
 
 Methods:
     1. Greedy Baseline - Direct pursuit policy
-    2. PPO RL - Trained without Kalman filtering  
-    3. PPO RL-Kalman - Trained with Kalman state estimation
+    2. Kalman Baseline - Greedy pursuit on Kalman-estimated state
+    3. PPO RL - Trained without Kalman filtering
+    4. PPO RL-Kalman - Trained with Kalman state estimation
 
 Comparisons:
     1. Overall success rate (bar chart with confidence intervals)
@@ -21,7 +22,7 @@ Comparisons:
     5. Speed grid heatmap comparison
 
 Outputs:
-    - results/comparison/baseline_vs_rl_vs_rl_kalman_summary.csv
+    - results/comparison/baseline_vs_kalman_baseline_vs_rl_vs_rl_kalman_summary.csv
     - results/comparison/compare_all_overall.png
     - results/comparison/compare_all_defender_speed.png
     - results/comparison/compare_all_enemy_speed.png
@@ -51,6 +52,12 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from scipy import stats
 
+from experiments.experiment_config import (
+    get_eval_csv_filename,
+    get_method_style,
+    get_sweep_csv_filename,
+)
+
 
 # Default paths
 BASELINE_DIR = PROJECT_ROOT / "results" / "baseline"
@@ -58,27 +65,12 @@ RL_DIR = PROJECT_ROOT / "results" / "rl"
 RL_KALMAN_DIR = PROJECT_ROOT / "results" / "rl_kalman"
 OUTPUT_DIR = PROJECT_ROOT / "results" / "comparison"
 
-# Method styling
 METHOD_STYLES = {
-    "baseline": {
-        "name": "Greedy Baseline",
-        "color": "#2E86AB",
-        "marker": "o",
-        "linestyle": "-",
-    },
-    "rl": {
-        "name": "PPO (Direct RL)",
-        "color": "#9B59B6",
-        "marker": "s",
-        "linestyle": "--",
-    },
-    "rl_kalman": {
-        "name": "PPO (RL + Kalman)",
-        "color": "#E74C3C",
-        "marker": "^",
-        "linestyle": "-.",
-    },
+    method_key: get_method_style(method_key)
+    for method_key in ["baseline", "kalman_baseline", "rl", "rl_kalman"]
 }
+
+METHOD_ORDER = ["baseline", "kalman_baseline", "rl", "rl_kalman"]
 
 
 def compute_proportion_ci(
@@ -111,44 +103,29 @@ def compute_proportion_ci(
 
 def load_evaluation_results() -> Dict[str, Optional[pd.DataFrame]]:
     """
-    Load overall evaluation results for all three methods.
+    Load overall evaluation results for all four methods.
     
     Returns:
         Dictionary mapping method name to DataFrame (or None if not found).
     """
     results = {}
-    
-    # Baseline
-    baseline_paths = [
-        BASELINE_DIR / "1k_episodes" / "baseline_results.csv",
-        BASELINE_DIR / "baseline_results.csv",
-    ]
-    for path in baseline_paths:
+
+    # Required overall comparison inputs
+    eval_paths = {
+        "baseline": BASELINE_DIR / get_eval_csv_filename("baseline"),
+        "kalman_baseline": BASELINE_DIR / get_eval_csv_filename("kalman_baseline"),
+        "rl": RL_DIR / get_eval_csv_filename("rl"),
+        "rl_kalman": RL_KALMAN_DIR / get_eval_csv_filename("rl_kalman"),
+    }
+
+    for method_key in METHOD_ORDER:
+        path = eval_paths[method_key]
         if path.exists():
-            results["baseline"] = pd.read_csv(path)
-            print(f"Loaded baseline: {len(results['baseline'])} episodes from {path}")
-            break
-    else:
-        print(f"Warning: Baseline results not found")
-        results["baseline"] = None
-    
-    # RL
-    rl_path = RL_DIR / "rl_results.csv"
-    if rl_path.exists():
-        results["rl"] = pd.read_csv(rl_path)
-        print(f"Loaded RL: {len(results['rl'])} episodes")
-    else:
-        print(f"Warning: RL results not found at {rl_path}")
-        results["rl"] = None
-    
-    # RL-Kalman
-    rl_kalman_path = RL_KALMAN_DIR / "rl_kalman_results.csv"
-    if rl_kalman_path.exists():
-        results["rl_kalman"] = pd.read_csv(rl_kalman_path)
-        print(f"Loaded RL-Kalman: {len(results['rl_kalman'])} episodes")
-    else:
-        print(f"Warning: RL-Kalman results not found at {rl_kalman_path}")
-        results["rl_kalman"] = None
+            results[method_key] = pd.read_csv(path)
+            print(f"Loaded {method_key}: {len(results[method_key])} episodes from {path}")
+        else:
+            print(f"Warning: {method_key} results not found at {path}")
+            results[method_key] = None
     
     return results
 
@@ -220,7 +197,8 @@ def create_summary_table(
     """
     rows = []
     
-    for method, df in results.items():
+    for method in METHOD_ORDER:
+        df = results.get(method)
         stats = compute_summary_stats(df, METHOD_STYLES[method]["name"])
         if stats:
             rows.append(stats)
@@ -256,7 +234,7 @@ def create_summary_table(
     
     # Print formatted table
     print("\n" + "=" * 100)
-    print("THREE-WAY COMPARISON SUMMARY")
+    print("FOUR-WAY COMPARISON SUMMARY")
     print("=" * 100)
     print(f"{'Method':<25} {'Success':>15} {'95% CI':>18} {'Failure':>12} {'Ep Len':>10}")
     print("-" * 100)
@@ -285,7 +263,7 @@ def plot_overall_comparison(
     ci_errors = []
     colors = []
     
-    for method_key in ["baseline", "rl", "rl_kalman"]:
+    for method_key in METHOD_ORDER:
         df = results.get(method_key)
         if df is None or len(df) == 0:
             continue
@@ -351,12 +329,14 @@ def load_sweep_results(sweep_name: str) -> Dict[str, Optional[pd.DataFrame]]:
     results = {}
     
     paths = {
-        "baseline": BASELINE_DIR / f"sweep_{sweep_name}.csv",
-        "rl": RL_DIR / f"sweep_{sweep_name}.csv",
-        "rl_kalman": RL_KALMAN_DIR / f"sweep_{sweep_name}.csv",
+        "baseline": BASELINE_DIR / get_sweep_csv_filename(sweep_name, "baseline"),
+        "kalman_baseline": BASELINE_DIR / get_sweep_csv_filename(sweep_name, "kalman_baseline"),
+        "rl": RL_DIR / get_sweep_csv_filename(sweep_name, "rl"),
+        "rl_kalman": RL_KALMAN_DIR / get_sweep_csv_filename(sweep_name, "rl_kalman"),
     }
     
-    for method, path in paths.items():
+    for method in METHOD_ORDER:
+        path = paths[method]
         if path.exists():
             results[method] = pd.read_csv(path)
             print(f"Loaded {method} sweep_{sweep_name}: {len(results[method])} rows")
@@ -377,7 +357,7 @@ def plot_1d_comparison(
     reference_label: str = "",
 ) -> None:
     """
-    Create comparison plot for 1D sweep with all three methods.
+    Create comparison plot for 1D sweep with all four methods.
     """
     # Check if any data available
     has_data = any(df is not None for df in results.values())
@@ -387,7 +367,7 @@ def plot_1d_comparison(
     
     fig, ax = plt.subplots(figsize=(10, 7))
     
-    for method_key in ["baseline", "rl", "rl_kalman"]:
+    for method_key in METHOD_ORDER:
         df = results.get(method_key)
         if df is None or x_col not in df.columns:
             continue
@@ -458,10 +438,14 @@ def plot_speed_grid_comparison(
     show: bool = False,
 ) -> None:
     """
-    Create 3-panel heatmap comparison for 2D speed grid sweep.
+    Create multi-panel heatmap comparison for 2D speed grid sweep.
     """
-    # Filter to available data
-    available = {k: v for k, v in results.items() if v is not None}
+    # Filter to available data in stable method order
+    available = {
+        method_key: results[method_key]
+        for method_key in METHOD_ORDER
+        if results.get(method_key) is not None
+    }
     if not available:
         print("No speed grid data available")
         return
@@ -554,7 +538,7 @@ def plot_improvement_bars(
     colors = []
     methods = []
     
-    for method_key in ["rl", "rl_kalman"]:
+    for method_key in ["kalman_baseline", "rl", "rl_kalman"]:
         df = results.get(method_key)
         if df is None:
             continue
@@ -605,7 +589,7 @@ def plot_improvement_bars(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Three-way comparison: Baseline vs RL vs RL-Kalman"
+        description="Four-way comparison: Baseline vs Kalman Baseline vs RL vs RL-Kalman"
     )
     parser.add_argument(
         "--show-plots", action="store_true",
@@ -621,7 +605,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print("=" * 80)
-    print("THREE-WAY COMPARISON: BASELINE vs RL vs RL-KALMAN")
+    print("FOUR-WAY COMPARISON: BASELINE vs KALMAN BASELINE vs RL vs RL-KALMAN")
     print("=" * 80)
     
     # 1. Load overall evaluation results
@@ -630,7 +614,7 @@ def main():
     
     # 2. Create summary table
     print("\n--- Creating Summary Table ---")
-    summary_path = output_dir / "baseline_vs_rl_vs_rl_kalman_summary.csv"
+    summary_path = output_dir / "baseline_vs_kalman_baseline_vs_rl_vs_rl_kalman_summary.csv"
     summary_df = create_summary_table(eval_results, summary_path)
     
     # 3. Plot overall comparison
